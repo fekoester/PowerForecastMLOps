@@ -9,6 +9,9 @@ ingest:
 validate:
 	power-forecast validate --config configs/data.yaml
 
+features:
+	power-forecast features --config configs/data.yaml
+
 test:
 	pytest -q
 

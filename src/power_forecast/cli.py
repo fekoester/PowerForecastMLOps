@@ -3,6 +3,7 @@ from rich.console import Console
 
 from power_forecast.pipelines.ingest_pipeline import run_ingestion
 from power_forecast.pipelines.validation_pipeline import run_validation
+from power_forecast.pipelines.feature_pipeline import run_feature_pipeline
 
 app = typer.Typer(help="PowerForecastMLOps CLI")
 console = Console()
@@ -24,6 +25,11 @@ def ingest(config: str = "configs/data.yaml") -> None:
 def validate(config: str = "configs/data.yaml") -> None:
     """Validate raw demand and weather data."""
     run_validation(config)
+
+@app.command()
+def features(config: str = "configs/data.yaml") -> None:
+    """Build leakage-safe model features."""
+    run_feature_pipeline(config)
 
 if __name__ == "__main__":
     app()

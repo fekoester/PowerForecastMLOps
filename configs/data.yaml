@@ -67,3 +67,25 @@ validation:
       shortwave_radiation:
         min: 0
         max: 1400
+
+features:
+  output_path: data/processed/features.csv
+  summary_path: reports/metrics/feature_summary.json
+
+  target_column: demand_mwh
+  timestamp_column: timestamp_utc
+
+  lags_hours:
+    - 1
+    - 2
+    - 3
+    - 24
+    - 48
+    - 168
+
+  rolling_windows_hours:
+    - 3
+    - 24
+    - 168
+
+  base_temperature_c: 18.0
