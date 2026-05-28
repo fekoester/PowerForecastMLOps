@@ -18,6 +18,9 @@ backtest:
 train:
 	power-forecast train --config configs/data.yaml
 
+predict:
+	power-forecast predict --config configs/data.yaml
+
 test:
 	pytest -q
 
