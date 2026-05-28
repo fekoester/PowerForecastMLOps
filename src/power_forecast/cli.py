@@ -7,6 +7,7 @@ from power_forecast.pipelines.feature_pipeline import run_feature_pipeline
 from power_forecast.pipelines.backtest_pipeline import run_backtest_pipeline
 from power_forecast.pipelines.train_pipeline import run_train_pipeline
 from power_forecast.pipelines.predict_pipeline import run_predict_pipeline
+from power_forecast.pipelines.monitor_pipeline import run_monitor_pipeline
 
 app = typer.Typer(help="PowerForecastMLOps CLI")
 console = Console()
@@ -48,6 +49,11 @@ def train(config: str = "configs/data.yaml") -> None:
 def predict(config: str = "configs/data.yaml") -> None:
     """Run batch inference using the saved model."""
     run_predict_pipeline(config)
+
+@app.command()
+def monitor(config: str = "configs/data.yaml") -> None:
+    """Build monitoring reports for latest predictions."""
+    run_monitor_pipeline(config)
 
 if __name__ == "__main__":
     app()

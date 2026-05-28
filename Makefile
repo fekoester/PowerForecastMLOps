@@ -21,6 +21,18 @@ train:
 predict:
 	power-forecast predict --config configs/data.yaml
 
+monitor:
+	power-forecast monitor --config configs/data.yaml
+
+run-all:
+	make ingest
+	make validate
+	make features
+	make backtest
+	make train
+	make predict
+	make monitor
+
 test:
 	pytest -q
 

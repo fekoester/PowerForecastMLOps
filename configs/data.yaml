@@ -1,4 +1,4 @@
-project:
+\project:
   name: PowerForecastMLOps
 
 eia:
@@ -143,3 +143,20 @@ predict:
   target_column: demand_mwh
   prediction_column: prediction_mwh
   n_latest_rows: 24
+
+
+monitor:
+  prediction_summary_path: reports/metrics/prediction_summary.json
+  train_report_path: reports/metrics/train_lightgbm.json
+  baseline_report_path: reports/metrics/backtest_baselines.json
+  predictions_path: data/predictions/latest_predictions.csv
+
+  summary_path: reports/metrics/monitoring_summary.json
+  markdown_report_path: reports/monitoring/latest_report.md
+  html_report_path: reports/monitoring/latest_report.html
+
+  degradation_thresholds:
+    watch_mae_ratio_vs_training: 1.25
+    degraded_mae_ratio_vs_training: 1.75
+    watch_mae_ratio_vs_baseline: 0.90
+    degraded_mae_ratio_vs_baseline: 1.00
