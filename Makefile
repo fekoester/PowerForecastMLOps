@@ -12,6 +12,9 @@ validate:
 features:
 	power-forecast features --config configs/data.yaml
 
+backtest:
+	power-forecast backtest --config configs/data.yaml
+
 test:
 	pytest -q
 

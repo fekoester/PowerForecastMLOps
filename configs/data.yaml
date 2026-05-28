@@ -89,3 +89,22 @@ features:
     - 168
 
   base_temperature_c: 18.0
+
+
+backtest:
+  output_path: reports/metrics/backtest_baselines.json
+  figure_path: reports/figures/backtest_baselines.png
+
+  timestamp_column: timestamp_utc
+  target_column: demand_mwh
+
+  min_train_days: 30
+  validation_window_days: 7
+  step_days: 7
+
+  baselines:
+    lag_1h: demand_lag_1h
+    lag_24h: demand_lag_24h
+    lag_168h: demand_lag_168h
+    rolling_mean_24h: demand_roll_mean_24h
+    rolling_mean_168h: demand_roll_mean_168h
