@@ -15,6 +15,9 @@ features:
 backtest:
 	power-forecast backtest --config configs/data.yaml
 
+train:
+	power-forecast train --config configs/data.yaml
+
 test:
 	pytest -q
 

@@ -5,6 +5,7 @@ from power_forecast.pipelines.ingest_pipeline import run_ingestion
 from power_forecast.pipelines.validation_pipeline import run_validation
 from power_forecast.pipelines.feature_pipeline import run_feature_pipeline
 from power_forecast.pipelines.backtest_pipeline import run_backtest_pipeline
+from power_forecast.pipelines.train_pipeline import run_train_pipeline
 
 app = typer.Typer(help="PowerForecastMLOps CLI")
 console = Console()
@@ -36,6 +37,11 @@ def features(config: str = "configs/data.yaml") -> None:
 def backtest(config: str = "configs/data.yaml") -> None:
     """Run walk-forward baseline backtests."""
     run_backtest_pipeline(config)
+
+@app.command()
+def train(config: str = "configs/data.yaml") -> None:
+    """Train LightGBM model with walk-forward validation."""
+    run_train_pipeline(config)
 
 if __name__ == "__main__":
     app()

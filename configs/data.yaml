@@ -108,3 +108,25 @@ backtest:
     lag_168h: demand_lag_168h
     rolling_mean_24h: demand_roll_mean_24h
     rolling_mean_168h: demand_roll_mean_168h
+
+
+train:
+  output_path: reports/metrics/train_lightgbm.json
+  model_path: models/local/lightgbm_model.pkl
+  feature_importance_path: reports/figures/lightgbm_feature_importance.png
+
+  timestamp_column: timestamp_utc
+  target_column: demand_mwh
+
+  min_train_days: 30
+  validation_window_days: 7
+  step_days: 7
+
+  model:
+    n_estimators: 500
+    learning_rate: 0.03
+    num_leaves: 31
+    max_depth: -1
+    subsample: 0.9
+    colsample_bytree: 0.9
+    random_state: 42
