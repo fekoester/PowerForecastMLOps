@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from rich.console import Console
 from rich.table import Table
+from pathlib import Path
+import shutil
 
 from power_forecast.monitoring.report import build_monitoring_report
 from power_forecast.utils.config import load_yaml
@@ -25,6 +27,13 @@ def run_monitor_pipeline(config_path: str) -> None:
         html_report_path=monitor_cfg["html_report_path"],
         thresholds=dict(monitor_cfg["degradation_thresholds"]),
     )
+    
+    local_figures_dir = Path("reports/monitoring/figures")
+    local_figures_dir.mkdir(parents=True, exist_ok=True)
+
+    source_figures_dir = Path("reports/figures")
+    for figure_path in source_figures_dir.glob("*.png"):
+        shutil.copy2(figure_path, local_figures_dir / figure_path.name)
 
     table = Table(title="Monitoring Summary")
     table.add_column("Item")

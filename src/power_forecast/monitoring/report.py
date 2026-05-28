@@ -173,7 +173,7 @@ def build_monitoring_report(
     markdown_path.parent.mkdir(parents=True, exist_ok=True)
     markdown_path.write_text(markdown, encoding="utf-8")
 
-    html_report = _render_html_report(markdown)
+    html_report = _render_html_dashboard(summary, predictions)
     html_path = Path(html_report_path)
     html_path.parent.mkdir(parents=True, exist_ok=True)
     html_path.write_text(html_report, encoding="utf-8")
@@ -370,3 +370,461 @@ def _render_html_report(markdown: str) -> str:
 
     html_lines.extend(["</body>", "</html>"])
     return "\n".join(html_lines)
+    
+    
+def _render_html_dashboard(summary: dict[str, Any], predictions: pd.DataFrame) -> str:
+    health = summary["health_status"]
+    warnings = summary["warnings"]
+
+    latest = summary["latest_metrics"]
+    training = summary["walk_forward_training_metrics"]
+    baseline = summary["best_baseline"]
+    ratios = summary["ratios"]
+    window = summary["latest_prediction_window"]
+    model = summary["model"]
+
+    health_class = {
+        "healthy": "healthy",
+        "watch": "watch",
+        "degraded": "degraded",
+        "unknown": "unknown",
+    }.get(health, "unknown")
+
+    warning_items = "".join(f"<li>{html.escape(w)}</li>" for w in warnings)
+    if not warning_items:
+        warning_items = "<li>None</li>"
+
+    show_cols = [
+        c
+        for c in [
+            "timestamp_utc",
+            "prediction_mwh",
+            "demand_mwh",
+            "error",
+            "absolute_error",
+            "absolute_percentage_error",
+        ]
+        if c in predictions.columns
+    ]
+
+    prediction_rows = []
+    for _, row in predictions.tail(10).iterrows():
+        cells = []
+        for col in show_cols:
+            value = row[col]
+            if isinstance(value, float):
+                if col == "absolute_percentage_error":
+                    cells.append(f"<td>{100 * value:.2f}%</td>")
+                else:
+                    cells.append(f"<td>{value:.2f}</td>")
+            else:
+                cells.append(f"<td>{html.escape(str(value))}</td>")
+        prediction_rows.append("<tr>" + "".join(cells) + "</tr>")
+
+    table_header = "".join(f"<th>{html.escape(col)}</th>" for col in show_cols)
+
+    generated_at = html.escape(str(summary["created_at_utc"]))
+
+    return f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>PowerForecastMLOps Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root {{
+      --bg: #0f172a;
+      --panel: #111827;
+      --panel2: #1f2937;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --line: #374151;
+      --good: #22c55e;
+      --watch: #f59e0b;
+      --bad: #ef4444;
+      --unknown: #94a3b8;
+      --accent: #38bdf8;
+    }}
+
+    * {{
+      box-sizing: border-box;
+    }}
+
+    body {{
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: linear-gradient(180deg, #020617 0%, #0f172a 100%);
+      color: var(--text);
+      line-height: 1.55;
+    }}
+
+    main {{
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 40px 24px 64px;
+    }}
+
+    a {{
+      color: var(--accent);
+      text-decoration: none;
+    }}
+
+    a:hover {{
+      text-decoration: underline;
+    }}
+
+    .hero {{
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 24px;
+      align-items: start;
+      margin-bottom: 28px;
+    }}
+
+    .title {{
+      margin: 0;
+      font-size: 2.2rem;
+      letter-spacing: -0.03em;
+    }}
+
+    .subtitle {{
+      margin-top: 8px;
+      color: var(--muted);
+      max-width: 850px;
+    }}
+
+    .badge {{
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 8px 14px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 0.82rem;
+      border: 1px solid var(--line);
+      background: var(--panel);
+    }}
+
+    .badge.healthy {{
+      color: var(--good);
+      border-color: rgba(34, 197, 94, 0.5);
+      background: rgba(34, 197, 94, 0.08);
+    }}
+
+    .badge.watch {{
+      color: var(--watch);
+      border-color: rgba(245, 158, 11, 0.5);
+      background: rgba(245, 158, 11, 0.08);
+    }}
+
+    .badge.degraded {{
+      color: var(--bad);
+      border-color: rgba(239, 68, 68, 0.5);
+      background: rgba(239, 68, 68, 0.08);
+    }}
+
+    .badge.unknown {{
+      color: var(--unknown);
+      border-color: rgba(148, 163, 184, 0.5);
+      background: rgba(148, 163, 184, 0.08);
+    }}
+
+    .grid {{
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 16px;
+      margin: 24px 0;
+    }}
+
+    .card {{
+      background: rgba(17, 24, 39, 0.92);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.25);
+    }}
+
+    .card .label {{
+      color: var(--muted);
+      font-size: 0.88rem;
+      margin-bottom: 6px;
+    }}
+
+    .card .value {{
+      font-size: 1.8rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+    }}
+
+    .card .small {{
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 0.88rem;
+    }}
+
+    section {{
+      margin-top: 28px;
+      background: rgba(17, 24, 39, 0.72);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 22px;
+    }}
+
+    h2 {{
+      margin: 0 0 14px;
+      letter-spacing: -0.02em;
+    }}
+
+    table {{
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border-radius: 10px;
+    }}
+
+    th, td {{
+      border-bottom: 1px solid var(--line);
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }}
+
+    th {{
+      color: var(--muted);
+      font-weight: 700;
+      background: rgba(31, 41, 55, 0.7);
+    }}
+
+    tr:last-child td {{
+      border-bottom: none;
+    }}
+
+    code {{
+      background: rgba(148, 163, 184, 0.12);
+      padding: 2px 5px;
+      border-radius: 5px;
+      color: #f8fafc;
+    }}
+
+    .pipeline {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      color: var(--muted);
+    }}
+
+    .step {{
+      padding: 8px 11px;
+      border: 1px solid var(--line);
+      background: rgba(31, 41, 55, 0.8);
+      border-radius: 999px;
+      color: var(--text);
+      font-size: 0.9rem;
+    }}
+
+    .arrow {{
+      color: var(--muted);
+    }}
+
+    .plots {{
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 18px;
+    }}
+
+    .plot {{
+      background: #ffffff;
+      border-radius: 12px;
+      padding: 12px;
+    }}
+
+    .plot img {{
+      width: 100%;
+      display: block;
+      border-radius: 8px;
+    }}
+
+    .note {{
+      color: var(--muted);
+      font-size: 0.95rem;
+    }}
+
+    ul {{
+      margin-top: 8px;
+    }}
+
+    @media (max-width: 900px) {{
+      .hero {{
+        grid-template-columns: 1fr;
+      }}
+      .grid {{
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }}
+    }}
+
+    @media (max-width: 620px) {{
+      .grid {{
+        grid-template-columns: 1fr;
+      }}
+      main {{
+        padding: 28px 14px 48px;
+      }}
+      .title {{
+        font-size: 1.7rem;
+      }}
+    }}
+  </style>
+</head>
+<body>
+<main>
+  <div class="hero">
+    <div>
+      <h1 class="title">PowerForecastMLOps Dashboard</h1>
+      <p class="subtitle">
+        Live electricity-demand forecasting pipeline using EIA demand data, Open-Meteo weather data,
+        leakage-safe feature engineering, walk-forward LightGBM training, batch prediction, and monitoring.
+      </p>
+      <p class="note">Generated at: <code>{generated_at}</code></p>
+    </div>
+    <div>
+      <span class="badge {health_class}">{html.escape(health)}</span>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="label">Latest MAE</div>
+      <div class="value">{_format_float(latest["mae"])}</div>
+      <div class="small">MWh over latest 24h window</div>
+    </div>
+    <div class="card">
+      <div class="label">Latest MAPE</div>
+      <div class="value">{_format_pct(latest["mape"])}</div>
+      <div class="small">Realized latest-window error</div>
+    </div>
+    <div class="card">
+      <div class="label">Model vs baseline</div>
+      <div class="value">{_format_float(ratios["latest_mae_vs_best_baseline_mae"], 3)}×</div>
+      <div class="small">Latest MAE / best baseline MAE</div>
+    </div>
+    <div class="card">
+      <div class="label">Feature count</div>
+      <div class="value">{model["feature_count"]}</div>
+      <div class="small">Validated model input schema</div>
+    </div>
+  </div>
+
+  <section>
+    <h2>Pipeline overview</h2>
+    <div class="pipeline">
+      <span class="step">EIA + Open-Meteo APIs</span>
+      <span class="arrow">→</span>
+      <span class="step">Raw data validation</span>
+      <span class="arrow">→</span>
+      <span class="step">Leakage-safe features</span>
+      <span class="arrow">→</span>
+      <span class="step">Walk-forward backtest</span>
+      <span class="arrow">→</span>
+      <span class="step">LightGBM training</span>
+      <span class="arrow">→</span>
+      <span class="step">Batch prediction</span>
+      <span class="arrow">→</span>
+      <span class="step">Monitoring report</span>
+      <span class="arrow">→</span>
+      <span class="step">GitHub Pages</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>Warnings</h2>
+    <ul>{warning_items}</ul>
+  </section>
+
+  <section>
+    <h2>Latest prediction window</h2>
+    <table>
+      <tr><th>Item</th><th>Value</th></tr>
+      <tr><td>Min timestamp</td><td><code>{html.escape(str(window["min_timestamp"]))}</code></td></tr>
+      <tr><td>Max timestamp</td><td><code>{html.escape(str(window["max_timestamp"]))}</code></td></tr>
+      <tr><td>Rows</td><td>{window["n_rows"]}</td></tr>
+      <tr><td>Has actuals</td><td>{window["has_actuals"]}</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>Reference performance</h2>
+    <table>
+      <tr><th>Reference</th><th>MAE</th><th>RMSE</th><th>MAPE</th></tr>
+      <tr>
+        <td>Latest realized window</td>
+        <td>{_format_float(latest["mae"])}</td>
+        <td>{_format_float(latest["rmse"])}</td>
+        <td>{_format_pct(latest["mape"])}</td>
+      </tr>
+      <tr>
+        <td>Walk-forward LightGBM average</td>
+        <td>{_format_float(training["mae"])}</td>
+        <td>{_format_float(training["rmse"])}</td>
+        <td>{_format_pct(training["mape"])}</td>
+      </tr>
+      <tr>
+        <td>Best baseline: {html.escape(str(baseline["name"]))}</td>
+        <td>{_format_float(baseline["mae"])}</td>
+        <td>{_format_float(baseline["rmse"])}</td>
+        <td>N/A</td>
+      </tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>Model metadata</h2>
+    <table>
+      <tr><th>Item</th><th>Value</th></tr>
+      <tr><td>Model path</td><td><code>{html.escape(str(model["model_path"]))}</code></td></tr>
+      <tr><td>Trained at</td><td><code>{html.escape(str(model["model_trained_at_utc"]))}</code></td></tr>
+      <tr><td>Latest MAE / training MAE</td><td>{_format_float(ratios["latest_mae_vs_training_mae"], 3)}</td></tr>
+      <tr><td>Latest MAE / best baseline MAE</td><td>{_format_float(ratios["latest_mae_vs_best_baseline_mae"], 3)}</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>Plots</h2>
+    <div class="plots">
+      <div>
+        <h3>Latest predictions vs actuals</h3>
+        <div class="plot"><img src="figures/latest_predictions.png" alt="Latest predictions plot"></div>
+      </div>
+      <div>
+        <h3>Feature importance</h3>
+        <div class="plot"><img src="figures/lightgbm_feature_importance.png" alt="Feature importance plot"></div>
+      </div>
+      <div>
+        <h3>Baseline comparison</h3>
+        <div class="plot"><img src="figures/backtest_baselines.png" alt="Baseline comparison plot"></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Latest prediction samples</h2>
+    <table>
+      <tr>{table_header}</tr>
+      {''.join(prediction_rows)}
+    </table>
+  </section>
+
+  <section>
+    <h2>Interpretation</h2>
+    <p>
+      This report checks whether the latest prediction window is consistent with the model's
+      walk-forward validation performance and whether it remains competitive with the strongest
+      naive baseline. A healthy status does not mean the model is perfect; it means there is no
+      obvious degradation signal in the latest available window.
+    </p>
+  </section>
+</main>
+</body>
+</html>
+"""
