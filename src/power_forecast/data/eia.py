@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from power_forecast.utils.env import require_env_var
 
 import pandas as pd
 import requests
@@ -30,11 +30,7 @@ def fetch_eia_hourly_demand(
     output_path:
         CSV path where raw demand data is stored.
     """
-    api_key = os.getenv("EIA_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            "EIA_API_KEY is not set. Create a .env file or export EIA_API_KEY in your shell."
-        )
+    api_key = require_env_var("EIA_API_KEY")
 
     end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
     start = end - timedelta(days=lookback_days)
