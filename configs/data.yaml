@@ -1,0 +1,69 @@
+project:
+  name: PowerForecastMLOps
+
+eia:
+  respondent: CISO
+  type: D
+  frequency: hourly
+  lookback_days: 90
+  output_path: data/raw/eia_demand.csv
+
+weather:
+  location_name: Los Angeles
+  latitude: 34.0522
+  longitude: -118.2437
+  timezone: America/Los_Angeles
+  lookback_days: 90
+  output_path: data/raw/weather.csv
+
+manifest:
+  output_path: data/raw/manifest.json
+
+
+validation:
+  output_path: reports/metrics/data_validation.json
+
+  eia:
+    required_columns:
+      - timestamp_utc
+      - demand_mwh
+      - region
+      - demand_type
+    timestamp_column: timestamp_utc
+    numeric_columns:
+      - demand_mwh
+    min_rows: 1000
+    max_missing_rate: 0.05
+    value_ranges:
+      demand_mwh:
+        min: 0
+        max: 100000
+
+  weather:
+    required_columns:
+      - timestamp_local
+      - temperature_2m
+      - relative_humidity_2m
+      - wind_speed_10m
+      - shortwave_radiation
+    timestamp_column: timestamp_local
+    numeric_columns:
+      - temperature_2m
+      - relative_humidity_2m
+      - wind_speed_10m
+      - shortwave_radiation
+    min_rows: 1000
+    max_missing_rate: 0.10
+    value_ranges:
+      temperature_2m:
+        min: -40
+        max: 60
+      relative_humidity_2m:
+        min: 0
+        max: 100
+      wind_speed_10m:
+        min: 0
+        max: 80
+      shortwave_radiation:
+        min: 0
+        max: 1400

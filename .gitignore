@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Environments and secrets
+.venv/
+.env
+
+# Data and artifacts
+data/raw/*
+data/interim/*
+data/processed/*
+data/predictions/*
+data/monitoring/*
+models/local/*
+reports/figures/*
+reports/metrics/*
+reports/monitoring/*
+
+# Keep directory structure
+!data/raw/.gitkeep
+!data/interim/.gitkeep
+!data/processed/.gitkeep
+!data/predictions/.gitkeep
+!data/monitoring/.gitkeep
+!models/local/.gitkeep
+!reports/figures/.gitkeep
+!reports/metrics/.gitkeep
+!reports/monitoring/.gitkeep
+
+# MLflow
+mlruns/
+mlartifacts/
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
