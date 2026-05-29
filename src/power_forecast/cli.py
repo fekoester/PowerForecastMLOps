@@ -42,9 +42,31 @@ def backtest(config: str = "configs/data.yaml") -> None:
     run_backtest_pipeline(config)
 
 @app.command()
-def train(config: str = "configs/data.yaml") -> None:
-    """Train LightGBM model with walk-forward validation."""
-    run_train_pipeline(config)
+def train(
+    config: str = "configs/data.yaml",
+    models: str | None = None,
+    windows: str | None = None,
+) -> None:
+    """Train and compare forecasting models.
+
+    Optional examples:
+      power-forecast train --models lightgbm
+      power-forecast train --models lightgbm,mlp
+      power-forecast train --models lightgbm --windows 30,90,180
+    """
+    selected_models = None
+    if models:
+        selected_models = [m.strip() for m in models.split(",") if m.strip()]
+
+    selected_windows = None
+    if windows:
+        selected_windows = [int(w.strip()) for w in windows.split(",") if w.strip()]
+
+    run_train_pipeline(
+        config_path=config,
+        selected_models=selected_models,
+        selected_windows=selected_windows,
+    )
 
 @app.command()
 def predict(config: str = "configs/data.yaml") -> None:

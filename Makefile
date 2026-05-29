@@ -16,7 +16,7 @@ backtest:
 	power-forecast backtest --config configs/data.yaml
 
 train:
-	power-forecast train --config configs/data.yaml
+	power-forecast train --config configs/data.yaml $(if $(MODELS),--models $(MODELS),) $(if $(WINDOWS),--windows $(WINDOWS),)
 
 predict:
 	power-forecast predict --config configs/data.yaml

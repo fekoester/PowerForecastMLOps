@@ -9,7 +9,11 @@ from power_forecast.utils.config import load_yaml
 console = Console()
 
 
-def run_train_pipeline(config_path: str) -> None:
+def run_train_pipeline(
+    config_path: str,
+    selected_models: list[str] | None = None,
+    selected_windows: list[int] | None = None,
+) -> None:
     config = load_yaml(config_path)
 
     train_cfg = config["train"]
@@ -36,7 +40,14 @@ def run_train_pipeline(config_path: str) -> None:
         allowed_lag_hours=list(train_cfg.get("allowed_lag_hours", [24, 48, 168])),
         recency_weighting_config=dict(train_cfg.get("recency_weighting", {"enabled": False})),
         training_windows_days=list(train_cfg.get("training_windows_days", [1095])),
+        selected_models=selected_models,
+        selected_windows=selected_windows,
     )
+    
+    if selected_models:
+        console.print(f"[cyan]Training selected model families:[/cyan] {', '.join(selected_models)}")
+    if selected_windows:
+        console.print(f"[cyan]Training selected windows:[/cyan] {', '.join(str(w) for w in selected_windows)}")
 
     table = Table(title="Model Comparison Summary")
     table.add_column("Model")

@@ -240,6 +240,8 @@ def train_and_compare_models(
     allowed_lag_hours: list[int] | None = None,
     recency_weighting_config: dict[str, Any] | None = None,
     training_windows_days: list[int] | None = None,
+    selected_models: list[str] | None = None,
+    selected_windows: list[int] | None = None,
 ) -> dict[str, Any]:
     if model_selection_metric != "mae":
         raise ValueError("Currently only model_selection_metric='mae' is supported.")
@@ -259,7 +261,40 @@ def train_and_compare_models(
     active_models = enabled_models(models_config)
     if not active_models:
         raise RuntimeError("No enabled models found in train.models config.")
+
+    if selected_models:
+        selected_model_set = set(selected_models)
+        unknown_models = selected_model_set - set(active_models.keys())
+        if unknown_models:
+            raise RuntimeError(
+                f"Requested models are not enabled or not configured: {sorted(unknown_models)}. "
+                f"Available enabled models: {sorted(active_models.keys())}"
+            )
+
+        active_models = {
+            name: cfg
+            for name, cfg in active_models.items()
+            if name in selected_model_set
+        }
+
     training_windows_days = training_windows_days or [1095]
+
+    if selected_windows:
+        configured_windows = set(int(w) for w in training_windows_days)
+        selected_window_set = set(int(w) for w in selected_windows)
+        unknown_windows = selected_window_set - configured_windows
+
+        if unknown_windows:
+            raise RuntimeError(
+                f"Requested training windows are not configured: {sorted(unknown_windows)}. "
+                f"Configured windows: {sorted(configured_windows)}"
+            )
+
+        training_windows_days = [
+            int(w)
+            for w in training_windows_days
+            if int(w) in selected_window_set
+        ]
 
     model_results: dict[str, Any] = {}
 
