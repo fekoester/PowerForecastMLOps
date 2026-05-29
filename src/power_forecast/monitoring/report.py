@@ -19,13 +19,43 @@ def _load_json(path: str | Path) -> dict[str, Any]:
 def _format_float(value: float | None, digits: int = 2) -> str:
     if value is None:
         return "N/A"
-    return f"{value:.{digits}f}"
+    try:
+        return f"{float(value):.{digits}f}"
+    except (TypeError, ValueError):
+        return "N/A"
 
 
 def _format_pct(value: float | None, digits: int = 2) -> str:
     if value is None:
         return "N/A"
-    return f"{100 * value:.{digits}f}%"
+    try:
+        return f"{100 * float(value):.{digits}f}%"
+    except (TypeError, ValueError):
+        return "N/A"
+
+
+def _metric(metrics: dict[str, Any], base_name: str) -> float | None:
+    """Read either raw metric names or aggregate metric names.
+
+    Latest-window metrics use:
+      mae, rmse, mape, bias
+
+    Walk-forward aggregate metrics use:
+      mae_mean, rmse_mean, mape_mean, bias_mean
+    """
+    if base_name in metrics:
+        return metrics.get(base_name)
+    return metrics.get(f"{base_name}_mean")
+
+
+def _safe_metric_for_sort(metrics: dict[str, Any], base_name: str) -> float:
+    value = _metric(metrics, base_name)
+    if value is None:
+        return float("inf")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float("inf")
 
 
 def _health_status(
@@ -72,6 +102,31 @@ def _health_status(
     return "healthy", warnings
 
 
+def _split_candidate_name(model_name: str) -> tuple[str, str]:
+    """Split candidate name like 'lightgbm_180d' into ('lightgbm', '180d').
+
+    Falls back to (model_name, "") for names without a training-window suffix.
+    """
+    if model_name.endswith("d") and "_" in model_name:
+        base, window = model_name.rsplit("_", maxsplit=1)
+        return base, window
+    return model_name, ""
+
+
+def _model_sort_key(
+    model_name: str,
+    per_model_training: dict[str, dict[str, Any]],
+    per_model_latest: dict[str, dict[str, Any]],
+) -> tuple[float, float, str]:
+    train_metrics = per_model_training.get(model_name, {})
+    latest_metrics = per_model_latest.get(model_name, {})
+    return (
+        _safe_metric_for_sort(train_metrics, "mae"),
+        _safe_metric_for_sort(latest_metrics, "mae"),
+        model_name,
+    )
+
+
 def build_monitoring_report(
     prediction_summary_path: str | Path,
     train_report_path: str | Path,
@@ -93,6 +148,7 @@ def build_monitoring_report(
         raise FileNotFoundError(f"Predictions file not found: {predictions_path}")
 
     predictions = pd.read_csv(predictions_path)
+
     future_forecast_summary = None
     future_forecast = None
 
@@ -101,8 +157,10 @@ def build_monitoring_report(
 
     if future_forecast_path is not None and Path(future_forecast_path).exists():
         future_forecast = pd.read_csv(future_forecast_path)
+
     latest_metrics = prediction_summary.get("metrics") or {}
     per_model_latest_metrics = prediction_summary.get("per_model_metrics") or {}
+
     latest_window_winner = None
     if per_model_latest_metrics:
         latest_window_winner = min(
@@ -118,6 +176,7 @@ def build_monitoring_report(
     training_mae = float(train_report["aggregate_metrics"]["mae_mean"])
     training_rmse = float(train_report["aggregate_metrics"]["rmse_mean"])
     training_mape = float(train_report["aggregate_metrics"]["mape_mean"])
+
     train_models = train_report.get("models", {})
     per_model_training_metrics = {
         model_name: model_result.get("aggregate_metrics", {})
@@ -188,6 +247,9 @@ def build_monitoring_report(
             "train_report_path": str(train_report_path),
             "baseline_report_path": str(baseline_report_path),
             "predictions_path": str(predictions_path),
+            "future_forecast_path": str(future_forecast_path)
+            if future_forecast_path is not None
+            else None,
         },
     }
 
@@ -218,10 +280,51 @@ def _render_markdown_report(summary: dict[str, Any], predictions: pd.DataFrame) 
     ratios = summary["ratios"]
     window = summary["latest_prediction_window"]
     model = summary["model"]
+    latest_winner = summary.get("latest_window_winner", "N/A")
+
+    per_model_latest = summary.get("per_model_latest_metrics", {})
+    per_model_training = summary.get("per_model_training_metrics", {})
 
     warning_text = "\n".join([f"- {w}" for w in warnings]) if warnings else "- None"
 
-    # Show only a compact table of the latest predictions.
+    model_rows = []
+    all_model_names = sorted(
+        set(per_model_training.keys()) | set(per_model_latest.keys()),
+        key=lambda name: _model_sort_key(name, per_model_training, per_model_latest),
+    )
+
+    for model_name in all_model_names:
+        train_m = per_model_training.get(model_name, {})
+        latest_m = per_model_latest.get(model_name, {})
+        roles = []
+        if model_name == model["model_name"]:
+            roles.append("production")
+        if model_name == latest_winner:
+            roles.append("latest winner")
+
+        model_rows.append(
+            "| "
+            + " | ".join(
+                [
+                    model_name,
+                    _format_float(_metric(train_m, "mae")),
+                    _format_pct(_metric(train_m, "mape")),
+                    _format_float(_metric(latest_m, "mae")),
+                    _format_pct(_metric(latest_m, "mape")),
+                    ", ".join(roles),
+                ]
+            )
+            + " |"
+        )
+
+    model_table = "\n".join(
+        [
+            "| Model | Walk-forward MAE | Walk-forward MAPE | Latest 24h MAE | Latest 24h MAPE | Role |",
+            "|---|---:|---:|---:|---:|---|",
+            *model_rows,
+        ]
+    )
+
     table_rows = []
     cols = list(predictions.columns)
     show_cols = [
@@ -252,7 +355,6 @@ def _render_markdown_report(summary: dict[str, Any], predictions: pd.DataFrame) 
 
     table_header = "| " + " | ".join(show_cols) + " |"
     table_sep = "| " + " | ".join(["---"] * len(show_cols)) + " |"
-
     latest_table = "\n".join([table_header, table_sep, *table_rows])
 
     return f"""# Power Forecast Monitoring Report
@@ -276,16 +378,17 @@ Generated at: `{summary["created_at_utc"]}`
 | Rows | {window["n_rows"]} |
 | Has actuals | {window["has_actuals"]} |
 
-## Model
+## Model selection
 
 | Item | Value |
 |---|---:|
-| Model name | `{model["model_name"]}` |
+| Production model | `{model["model_name"]}` |
+| Latest 24h winner | `{latest_winner}` |
 | Model path | `{model["model_path"]}` |
 | Trained at | `{model["model_trained_at_utc"]}` |
 | Feature count | {model["feature_count"]} |
 
-## Latest realized performance
+## Production model latest realized performance
 
 | Metric | Value |
 |---|---:|
@@ -294,11 +397,15 @@ Generated at: `{summary["created_at_utc"]}`
 | MAPE | {_format_pct(latest["mape"])} |
 | Bias | {_format_float(latest["bias"])} |
 
+## Model comparison
+
+{model_table}
+
 ## Reference performance
 
 | Reference | MAE | RMSE | MAPE |
 |---|---:|---:|---:|
-| Walk-forward LightGBM average | {_format_float(training["mae"])} | {_format_float(training["rmse"])} | {_format_pct(training["mape"])} |
+| Production model walk-forward average | {_format_float(training["mae"])} | {_format_float(training["rmse"])} | {_format_pct(training["mape"])} |
 | Best baseline: {baseline["name"]} | {_format_float(baseline["mae"])} | {_format_float(baseline["rmse"])} | N/A |
 
 ## Ratios
@@ -314,13 +421,11 @@ Generated at: `{summary["created_at_utc"]}`
 
 ## Interpretation
 
-This report checks whether the latest prediction window is consistent with the model's walk-forward validation performance and whether it remains competitive with the strongest naive baseline. A `healthy` status does not mean the model is perfect; it means there is no obvious degradation signal in the latest available window.
+The production model is selected by average walk-forward validation MAE. The latest 24h winner is the model with the lowest realized MAE on the latest known prediction window. These two can differ because shorter training windows may adapt better to the current regime, while longer training windows may be more robust on average.
 """
 
 
 def _render_html_report(markdown: str) -> str:
-    # Minimal Markdown-to-HTML renderer.
-    # This intentionally avoids adding another dependency.
     lines = markdown.splitlines()
     html_lines = [
         "<!doctype html>",
@@ -371,7 +476,6 @@ def _render_html_report(markdown: str) -> str:
         elif stripped.startswith("|") and stripped.endswith("|"):
             cells = [c.strip() for c in stripped.strip("|").split("|")]
 
-            # separator row like |---|---|
             if all(set(c) <= {"-", ":"} for c in cells):
                 continue
 
@@ -398,13 +502,10 @@ def _render_html_report(markdown: str) -> str:
 
     html_lines.extend(["</body>", "</html>"])
     return "\n".join(html_lines)
-    
-    
+
+
 def _model_description(model_name: str) -> dict[str, str]:
-    base_model_name = model_name.rsplit("_", maxsplit=1)[0]
-    window_label = ""
-    if model_name.endswith("d") and "_" in model_name:
-        window_label = model_name.rsplit("_", maxsplit=1)[1]
+    base_model_name, window_label = _split_candidate_name(model_name)
 
     descriptions = {
         "lightgbm": {
@@ -476,6 +577,48 @@ def _model_description(model_name: str) -> dict[str, str]:
     return desc
 
 
+def _build_prediction_sample_table(
+    predictions: pd.DataFrame,
+    production_model: str,
+    latest_winner: str | None,
+) -> tuple[str, str]:
+    show_cols = ["timestamp_utc"]
+
+    if "demand_mwh" in predictions.columns:
+        show_cols.append("demand_mwh")
+
+    production_col = f"prediction_mwh_{production_model}"
+    if production_col in predictions.columns:
+        show_cols.append(production_col)
+
+    if latest_winner is not None:
+        latest_col = f"prediction_mwh_{latest_winner}"
+        if latest_col in predictions.columns and latest_col not in show_cols:
+            show_cols.append(latest_col)
+
+    for col in ["prediction_mwh", "error", "absolute_error", "absolute_percentage_error"]:
+        if col in predictions.columns and col not in show_cols:
+            show_cols.append(col)
+
+    prediction_rows = []
+    for _, row in predictions.tail(10).iterrows():
+        cells = []
+        for col in show_cols:
+            value = row[col]
+            if isinstance(value, float):
+                if col == "absolute_percentage_error":
+                    cells.append(f"<td>{100 * value:.2f}%</td>")
+                else:
+                    cells.append(f"<td>{value:.2f}</td>")
+            else:
+                cells.append(f"<td>{html.escape(str(value))}</td>")
+        prediction_rows.append("<tr>" + "".join(cells) + "</tr>")
+
+    table_header = "".join(f"<th>{html.escape(col)}</th>" for col in show_cols)
+    table_body = "".join(prediction_rows)
+    return table_header, table_body
+
+
 def _render_html_dashboard(
     summary: dict[str, Any],
     predictions: pd.DataFrame,
@@ -485,17 +628,20 @@ def _render_html_dashboard(
     warnings = summary["warnings"]
 
     latest = summary["latest_metrics"]
-    training = summary["walk_forward_training_metrics"]
     baseline = summary["best_baseline"]
     ratios = summary["ratios"]
     window = summary["latest_prediction_window"]
     model = summary["model"]
 
+    production_model = str(model.get("model_name", "unknown"))
+    latest_winner = summary.get("latest_window_winner")
+
     per_model_latest = summary.get("per_model_latest_metrics", {})
     per_model_training = summary.get("per_model_training_metrics", {})
 
     all_model_names = sorted(
-        set(per_model_training.keys()) | set(per_model_latest.keys())
+        set(per_model_training.keys()) | set(per_model_latest.keys()),
+        key=lambda name: _model_sort_key(name, per_model_training, per_model_latest),
     )
 
     health_class = {
@@ -511,39 +657,44 @@ def _render_html_dashboard(
 
     generated_at = html.escape(str(summary["created_at_utc"]))
 
-    # Overview model comparison rows
     model_metric_rows = []
     for model_name in all_model_names:
         train_m = per_model_training.get(model_name, {})
         latest_m = per_model_latest.get(model_name, {})
-        production_selected = "production" if model_name == model.get("model_name") else ""
-        latest_selected = "latest" if model_name == summary.get("latest_window_winner") else ""
-        selected = " ".join(x for x in [production_selected, latest_selected] if x)
+
+        roles = []
+        if model_name == production_model:
+            roles.append("production")
+        if model_name == latest_winner:
+            roles.append("latest")
+        selected = " ".join(roles)
 
         model_metric_rows.append(
             f"""
             <tr>
               <td><strong>{html.escape(model_name)}</strong> <span class="model-tags">{html.escape(selected)}</span></td>
-              <td>{_format_float(train_m.get("mae"))}</td>
-              <td>{_format_float(train_m.get("rmse"))}</td>
-              <td>{_format_pct(train_m.get("mape"))}</td>
-              <td>{_format_float(train_m.get("bias"))}</td>
-              <td>{_format_float(latest_m.get("mae"))}</td>
-              <td>{_format_pct(latest_m.get("mape"))}</td>
+              <td>{_format_float(_metric(train_m, "mae"))}</td>
+              <td>{_format_float(_metric(train_m, "rmse"))}</td>
+              <td>{_format_pct(_metric(train_m, "mape"))}</td>
+              <td>{_format_float(_metric(train_m, "bias"))}</td>
+              <td>{_format_float(_metric(latest_m, "mae"))}</td>
+              <td>{_format_float(_metric(latest_m, "rmse"))}</td>
+              <td>{_format_pct(_metric(latest_m, "mape"))}</td>
+              <td>{_format_float(_metric(latest_m, "bias"))}</td>
             </tr>
             """
         )
 
-    # Per-model detail cards
     model_detail_cards = []
     for model_name in all_model_names:
         desc = _model_description(model_name)
         train_m = per_model_training.get(model_name, {})
         latest_m = per_model_latest.get(model_name, {})
+
         badges = []
-        if model_name == model.get("model_name"):
+        if model_name == production_model:
             badges.append('<span class="mini-badge selected">production model</span>')
-        if model_name == summary.get("latest_window_winner"):
+        if model_name == latest_winner:
             badges.append('<span class="mini-badge selected">latest 24h winner</span>')
 
         selected_badge = " ".join(badges)
@@ -565,20 +716,20 @@ def _render_html_dashboard(
                   <h4>Walk-forward performance</h4>
                   <table>
                     <tr><th>Metric</th><th>Value</th></tr>
-                    <tr><td>MAE</td><td>{_format_float(train_m.get("mae_mean"))}</td></tr>
-                    <tr><td>RMSE</td><td>{_format_float(train_m.get("rmse_mean"))}</td></tr>
-                    <tr><td>MAPE</td><td>{_format_pct(train_m.get("mape_mean"))}</td></tr>
-                    <tr><td>Bias</td><td>{_format_float(train_m.get("bias_mean"))}</td></tr>
+                    <tr><td>MAE</td><td>{_format_float(_metric(train_m, "mae"))}</td></tr>
+                    <tr><td>RMSE</td><td>{_format_float(_metric(train_m, "rmse"))}</td></tr>
+                    <tr><td>MAPE</td><td>{_format_pct(_metric(train_m, "mape"))}</td></tr>
+                    <tr><td>Bias</td><td>{_format_float(_metric(train_m, "bias"))}</td></tr>
                   </table>
                 </div>
                 <div>
                   <h4>Latest 24h performance</h4>
                   <table>
                     <tr><th>Metric</th><th>Value</th></tr>
-                    <tr><td>MAE</td><td>{_format_float(latest_m.get("mae"))}</td></tr>
-                    <tr><td>RMSE</td><td>{_format_float(latest_m.get("rmse"))}</td></tr>
-                    <tr><td>MAPE</td><td>{_format_pct(latest_m.get("mape"))}</td></tr>
-                    <tr><td>Bias</td><td>{_format_float(latest_m.get("bias"))}</td></tr>
+                    <tr><td>MAE</td><td>{_format_float(_metric(latest_m, "mae"))}</td></tr>
+                    <tr><td>RMSE</td><td>{_format_float(_metric(latest_m, "rmse"))}</td></tr>
+                    <tr><td>MAPE</td><td>{_format_pct(_metric(latest_m, "mape"))}</td></tr>
+                    <tr><td>Bias</td><td>{_format_float(_metric(latest_m, "bias"))}</td></tr>
                   </table>
                 </div>
               </div>
@@ -591,37 +742,19 @@ def _render_html_dashboard(
             """
         )
 
-    # Latest prediction sample table
-    show_cols = [
-        c
-        for c in [
-            "timestamp_utc",
-            "demand_mwh",
-            "prediction_mwh_esn",
-            "prediction_mwh_lightgbm",
-            "prediction_mwh_mlp",
-            "prediction_mwh",
-            "absolute_error",
-            "absolute_percentage_error",
-        ]
-        if c in predictions.columns
-    ]
+    table_header, prediction_rows = _build_prediction_sample_table(
+        predictions=predictions,
+        production_model=production_model,
+        latest_winner=latest_winner,
+    )
 
-    prediction_rows = []
-    for _, row in predictions.tail(10).iterrows():
-        cells = []
-        for col in show_cols:
-            value = row[col]
-            if isinstance(value, float):
-                if col == "absolute_percentage_error":
-                    cells.append(f"<td>{100 * value:.2f}%</td>")
-                else:
-                    cells.append(f"<td>{value:.2f}</td>")
-            else:
-                cells.append(f"<td>{html.escape(str(value))}</td>")
-        prediction_rows.append("<tr>" + "".join(cells) + "</tr>")
-
-    table_header = "".join(f"<th>{html.escape(col)}</th>" for col in show_cols)
+    future_summary = summary.get("future_forecast") or {}
+    future_window_text = "N/A"
+    if future_summary:
+        future_window_text = (
+            f"{html.escape(str(future_summary.get('min_timestamp', 'N/A')))} → "
+            f"{html.escape(str(future_summary.get('max_timestamp', 'N/A')))}"
+        )
 
     return f"""<!doctype html>
 <html>
@@ -660,7 +793,7 @@ def _render_html_dashboard(
     }}
 
     main {{
-      max-width: 1240px;
+      max-width: 1320px;
       margin: 0 auto;
       padding: 36px 22px 64px;
     }}
@@ -685,7 +818,7 @@ def _render_html_dashboard(
     .subtitle {{
       margin-top: 8px;
       color: var(--muted);
-      max-width: 900px;
+      max-width: 920px;
     }}
 
     .badge {{
@@ -758,7 +891,7 @@ def _render_html_dashboard(
 
     .grid {{
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(5, minmax(0, 1fr));
       gap: 16px;
       margin: 20px 0;
     }}
@@ -778,9 +911,10 @@ def _render_html_dashboard(
     }}
 
     .card .value {{
-      font-size: 1.75rem;
+      font-size: 1.55rem;
       font-weight: 850;
       letter-spacing: -0.04em;
+      word-break: break-word;
     }}
 
     .card .small {{
@@ -826,6 +960,23 @@ def _render_html_dashboard(
       color: var(--muted);
       font-weight: 800;
       background: rgba(30, 41, 59, 0.72);
+    }}
+
+    .sortable-table th {{
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+    }}
+
+    .sortable-table th:hover {{
+      color: #ffffff;
+      background: rgba(56, 189, 248, 0.16);
+    }}
+
+    .sort-indicator {{
+      color: var(--accent);
+      font-size: 0.78rem;
+      margin-left: 6px;
     }}
 
     tr:last-child td {{ border-bottom: none; }}
@@ -874,6 +1025,13 @@ def _render_html_dashboard(
       font-size: 0.95rem;
     }}
 
+    .model-tags {{
+      color: var(--accent);
+      font-size: 0.82rem;
+      margin-left: 6px;
+      white-space: nowrap;
+    }}
+
     .model-card {{
       border: 1px solid var(--line);
       border-radius: 18px;
@@ -920,6 +1078,7 @@ def _render_html_dashboard(
       font-weight: 800;
       text-transform: uppercase;
       letter-spacing: 0.06em;
+      margin-left: 6px;
     }}
 
     .mini-badge.selected {{
@@ -928,20 +1087,17 @@ def _render_html_dashboard(
       background: rgba(34, 197, 94, 0.10);
     }}
 
-    .two-col {{
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 18px;
-    }}
-
     .scroll-table {{
       overflow-x: auto;
     }}
 
+    @media (max-width: 1120px) {{
+      .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+    }}
+
     @media (max-width: 960px) {{
       .hero {{ grid-template-columns: 1fr; }}
-      .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
-      .model-grid, .two-col {{ grid-template-columns: 1fr; }}
+      .model-grid {{ grid-template-columns: 1fr; }}
     }}
 
     @media (max-width: 620px) {{
@@ -958,8 +1114,8 @@ def _render_html_dashboard(
       <h1 class="title">PowerForecastMLOps Dashboard</h1>
       <p class="subtitle">
         Live electricity-demand forecasting system using public EIA demand data and Open-Meteo weather data.
-        The pipeline compares LightGBM, an MLP neural network, and an Echo State Network under the same
-        leakage-safe walk-forward protocol.
+        The pipeline compares LightGBM, an MLP neural network, and an Echo State Network across multiple
+        recent training windows under the same forecast-safe walk-forward protocol.
       </p>
       <p class="note">Generated at: <code>{generated_at}</code></p>
     </div>
@@ -972,54 +1128,60 @@ def _render_html_dashboard(
     <button class="tab-button active" onclick="openTab(event, 'overview')">Overview</button>
     <button class="tab-button" onclick="openTab(event, 'models')">Models</button>
     <button class="tab-button" onclick="openTab(event, 'data')">Data & Pipeline</button>
-    <button class="tab-button" onclick="openTab(event, 'predictions')">Latest Predictions</button>
+    <button class="tab-button" onclick="openTab(event, 'predictions')">Predictions</button>
     <button class="tab-button" onclick="openTab(event, 'diagnostics')">Diagnostics</button>
   </div>
 
   <div id="overview" class="tab-panel active">
     <div class="grid">
       <div class="card">
-          <div class="label">Production model</div>
-          <div class="value">{html.escape(str(model["model_name"]))}</div>
-          <div class="small">Selected by walk-forward MAE</div>
+        <div class="label">Production model</div>
+        <div class="value">{html.escape(production_model)}</div>
+        <div class="small">Selected by walk-forward MAE</div>
       </div>
       <div class="card">
-      <div class="label">Latest 24h winner</div>
-      <div class="value">{html.escape(str(summary.get("latest_window_winner", "N/A")))}</div>
-      <div class="small">Best MAE on shown window</div>
-    </div>
+        <div class="label">Latest 24h winner</div>
+        <div class="value">{html.escape(str(latest_winner or "N/A"))}</div>
+        <div class="small">Best realized MAE on shown window</div>
+      </div>
       <div class="card">
-        <div class="label">Latest MAE</div>
+        <div class="label">Production latest MAE</div>
         <div class="value">{_format_float(latest["mae"])}</div>
         <div class="small">MWh over latest 24h window</div>
       </div>
       <div class="card">
-        <div class="label">Latest MAPE</div>
+        <div class="label">Production latest MAPE</div>
         <div class="value">{_format_pct(latest["mape"])}</div>
         <div class="small">Realized latest-window error</div>
       </div>
       <div class="card">
-        <div class="label">Best model / baseline</div>
+        <div class="label">Production / baseline</div>
         <div class="value">{_format_float(ratios["latest_mae_vs_best_baseline_mae"], 3)}×</div>
         <div class="small">Latest MAE / best baseline MAE</div>
       </div>
     </div>
+
     <p class="note">
-      The production model is selected by average walk-forward validation MAE. The latest 24h winner is the model with the lowest realized MAE on the currently displayed prediction window.
+      The production model is selected by average walk-forward validation MAE. The latest 24h winner is the
+      candidate with the lowest realized MAE on the current monitoring window. These can differ because shorter
+      training windows may adapt better to the current regime, while longer windows may be more robust on average.
     </p>
 
     <section>
       <h2>Model comparison</h2>
+      <p class="note">Click a column header to sort ascending; click it again to sort descending.</p>
       <div class="scroll-table">
-        <table>
+        <table class="sortable-table">
           <tr>
-            <th>Model</th>
-            <th>Walk-forward MAE</th>
-            <th>Walk-forward RMSE</th>
-            <th>Walk-forward MAPE</th>
-            <th>Walk-forward Bias</th>
-            <th>Latest MAE</th>
-            <th>Latest MAPE</th>
+            <th onclick="sortTable(this, 0, 'text')">Model</th>
+            <th onclick="sortTable(this, 1, 'number')">Walk-forward MAE</th>
+            <th onclick="sortTable(this, 2, 'number')">Walk-forward RMSE</th>
+            <th onclick="sortTable(this, 3, 'number')">Walk-forward MAPE</th>
+            <th onclick="sortTable(this, 4, 'number')">Walk-forward Bias</th>
+            <th onclick="sortTable(this, 5, 'number')">Latest MAE</th>
+            <th onclick="sortTable(this, 6, 'number')">Latest RMSE</th>
+            <th onclick="sortTable(this, 7, 'number')">Latest MAPE</th>
+            <th onclick="sortTable(this, 8, 'number')">Latest Bias</th>
           </tr>
           {''.join(model_metric_rows)}
           <tr>
@@ -1030,21 +1192,24 @@ def _render_html_dashboard(
             <td>N/A</td>
             <td>N/A</td>
             <td>N/A</td>
+            <td>N/A</td>
+            <td>N/A</td>
           </tr>
         </table>
       </div>
     </section>
 
     <section>
-      <h2>Latest prediction graph</h2>
-      <p class="note">The plot compares actual demand with each model's prediction over the latest 24 known hours.</p>
+      <h2>Latest 24h prediction</h2>
+      <p class="note">The plot compares actual demand with each model candidate's prediction over the latest 24 known hours.</p>
       <div class="plot"><img src="figures/latest_predictions.png" alt="Latest predictions by model"></div>
     </section>
-    
+
     <section>
       <h2>Next 24h forecast</h2>
       <p class="note">
-        Forecast for the next 24 hours using weather forecast data, calendar features, and demand-history features available before the forecast horizon.
+        Forecast window: <code>{future_window_text}</code>. This uses weather forecast data, calendar features,
+        and demand-history features available before the forecast horizon.
       </p>
       <div class="plot"><img src="figures/future_24h_forecast.png" alt="Next 24h forecast"></div>
     </section>
@@ -1059,7 +1224,8 @@ def _render_html_dashboard(
     <section>
       <h2>Model details</h2>
       <p class="note">
-        All models are evaluated using the same leakage-safe feature table and the same walk-forward validation folds.
+        Each candidate is evaluated using the same forecast-safe feature table and walk-forward validation protocol.
+        The suffix, such as <code>30d</code> or <code>1095d</code>, denotes how much recent training data was used.
       </p>
       {''.join(model_detail_cards)}
     </section>
@@ -1071,7 +1237,7 @@ def _render_html_dashboard(
       <table>
         <tr><th>Item</th><th>Value</th></tr>
         <tr><td>Demand source</td><td>EIA Open Data API, California ISO hourly demand</td></tr>
-        <tr><td>Weather source</td><td>Open-Meteo hourly weather, Los Angeles proxy location</td></tr>
+        <tr><td>Weather source</td><td>Open-Meteo historical and forecast weather, Los Angeles proxy location</td></tr>
         <tr><td>Latest prediction window start</td><td><code>{html.escape(str(window["min_timestamp"]))}</code></td></tr>
         <tr><td>Latest prediction window end</td><td><code>{html.escape(str(window["max_timestamp"]))}</code></td></tr>
         <tr><td>Rows in latest prediction window</td><td>{window["n_rows"]}</td></tr>
@@ -1086,13 +1252,15 @@ def _render_html_dashboard(
         <span class="arrow">→</span>
         <span class="step">Raw data validation</span>
         <span class="arrow">→</span>
-        <span class="step">Leakage-safe features</span>
+        <span class="step">Forecast-safe features</span>
         <span class="arrow">→</span>
         <span class="step">Walk-forward backtest</span>
         <span class="arrow">→</span>
-        <span class="step">Model comparison</span>
+        <span class="step">Windowed model comparison</span>
         <span class="arrow">→</span>
-        <span class="step">Batch prediction</span>
+        <span class="step">Latest 24h prediction</span>
+        <span class="arrow">→</span>
+        <span class="step">Next 24h forecast</span>
         <span class="arrow">→</span>
         <span class="step">Monitoring report</span>
         <span class="arrow">→</span>
@@ -1109,12 +1277,17 @@ def _render_html_dashboard(
       </p>
       <div class="plot"><img src="figures/future_24h_forecast.png" alt="Next 24h future forecast"></div>
     </section>
+
     <section>
       <h2>Latest prediction samples</h2>
+      <p class="note">
+        This compact table shows actual demand, the production-model prediction, and the latest-window-winner prediction.
+        The full per-model comparison is shown in the overview table.
+      </p>
       <div class="scroll-table">
         <table>
           <tr>{table_header}</tr>
-          {''.join(prediction_rows)}
+          {prediction_rows}
         </table>
       </div>
     </section>
@@ -1144,11 +1317,12 @@ def _render_html_dashboard(
       <h2>Model metadata</h2>
       <table>
         <tr><th>Item</th><th>Value</th></tr>
-        <tr><td>Selected model</td><td><code>{html.escape(str(model["model_name"]))}</code></td></tr>
+        <tr><td>Production model</td><td><code>{html.escape(production_model)}</code></td></tr>
+        <tr><td>Latest 24h winner</td><td><code>{html.escape(str(latest_winner or "N/A"))}</code></td></tr>
         <tr><td>Model path</td><td><code>{html.escape(str(model["model_path"]))}</code></td></tr>
         <tr><td>Trained at</td><td><code>{html.escape(str(model["model_trained_at_utc"]))}</code></td></tr>
-        <tr><td>Latest MAE / training MAE</td><td>{_format_float(ratios["latest_mae_vs_training_mae"], 3)}</td></tr>
-        <tr><td>Latest MAE / best baseline MAE</td><td>{_format_float(ratios["latest_mae_vs_best_baseline_mae"], 3)}</td></tr>
+        <tr><td>Production latest MAE / training MAE</td><td>{_format_float(ratios["latest_mae_vs_training_mae"], 3)}</td></tr>
+        <tr><td>Production latest MAE / best baseline MAE</td><td>{_format_float(ratios["latest_mae_vs_best_baseline_mae"], 3)}</td></tr>
       </table>
     </section>
   </div>
@@ -1164,6 +1338,85 @@ function openTab(event, tabId) {{
 
   document.getElementById(tabId).classList.add('active');
   event.currentTarget.classList.add('active');
+}}
+
+function parseCellValue(text, type) {{
+  const cleaned = text
+    .replace(/production/g, '')
+    .replace(/latest/g, '')
+    .replace(/,/g, '')
+    .replace(/%/g, '')
+    .replace(/×/g, '')
+    .trim();
+
+  if (cleaned === '' || cleaned === 'N/A') {{
+    return type === 'number' ? Number.POSITIVE_INFINITY : '';
+  }}
+
+  if (type === 'number') {{
+    const value = Number.parseFloat(cleaned);
+    return Number.isNaN(value) ? Number.POSITIVE_INFINITY : value;
+  }}
+
+  return cleaned.toLowerCase();
+}}
+
+function clearSortIndicators(table) {{
+  table.querySelectorAll('th').forEach(th => {{
+    const indicator = th.querySelector('.sort-indicator');
+    if (indicator) {{
+      indicator.remove();
+    }}
+  }});
+}}
+
+function sortTable(headerCell, columnIndex, type) {{
+  const table = headerCell.closest('table');
+  const tbody = table.tBodies[0] || table;
+  const rows = Array.from(table.querySelectorAll('tr')).slice(1);
+
+  const currentDirection = headerCell.dataset.sortDirection || 'none';
+  const nextDirection = currentDirection === 'asc' ? 'desc' : 'asc';
+
+  table.querySelectorAll('th').forEach(th => {{
+    th.dataset.sortDirection = 'none';
+  }});
+  headerCell.dataset.sortDirection = nextDirection;
+
+  const sortableRows = [];
+  const pinnedRows = [];
+
+  rows.forEach(row => {{
+    const cells = row.querySelectorAll('td');
+    const firstCell = cells[0] ? cells[0].innerText.toLowerCase() : '';
+
+    if (firstCell.includes('best baseline')) {{
+      pinnedRows.push(row);
+    }} else {{
+      sortableRows.push(row);
+    }}
+  }});
+
+  sortableRows.sort((a, b) => {{
+    const aText = a.children[columnIndex]?.innerText || '';
+    const bText = b.children[columnIndex]?.innerText || '';
+
+    const aValue = parseCellValue(aText, type);
+    const bValue = parseCellValue(bText, type);
+
+    if (aValue < bValue) return nextDirection === 'asc' ? -1 : 1;
+    if (aValue > bValue) return nextDirection === 'asc' ? 1 : -1;
+    return 0;
+  }});
+
+  clearSortIndicators(table);
+
+  const indicator = document.createElement('span');
+  indicator.className = 'sort-indicator';
+  indicator.textContent = nextDirection === 'asc' ? '▲' : '▼';
+  headerCell.appendChild(indicator);
+
+  sortableRows.concat(pinnedRows).forEach(row => tbody.appendChild(row));
 }}
 </script>
 </body>
