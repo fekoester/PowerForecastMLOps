@@ -92,6 +92,7 @@ def build_monitoring_report(
 
     predictions = pd.read_csv(predictions_path)
     latest_metrics = prediction_summary.get("metrics") or {}
+    per_model_latest_metrics = prediction_summary.get("per_model_metrics") or {}
 
     latest_mae = latest_metrics.get("mae")
     latest_rmse = latest_metrics.get("rmse")
@@ -101,6 +102,11 @@ def build_monitoring_report(
     training_mae = float(train_report["aggregate_metrics"]["mae_mean"])
     training_rmse = float(train_report["aggregate_metrics"]["rmse_mean"])
     training_mape = float(train_report["aggregate_metrics"]["mape_mean"])
+    train_models = train_report.get("models", {})
+    per_model_training_metrics = {
+        model_name: model_result.get("aggregate_metrics", {})
+        for model_name, model_result in train_models.items()
+    }
 
     best_baseline = baseline_report["aggregate_metrics"]["_best_by_mae"]
     best_baseline_name = str(best_baseline["name"])
@@ -143,11 +149,13 @@ def build_monitoring_report(
             "mape": latest_mape,
             "bias": latest_bias,
         },
+        "per_model_latest_metrics": per_model_latest_metrics,
         "walk_forward_training_metrics": {
             "mae": training_mae,
             "rmse": training_rmse,
             "mape": training_mape,
         },
+        "per_model_training_metrics": per_model_training_metrics,
         "best_baseline": {
             "name": best_baseline_name,
             "mae": best_baseline_mae,
@@ -374,6 +382,67 @@ def _render_html_report(markdown: str) -> str:
     return "\n".join(html_lines)
     
     
+def _model_description(model_name: str) -> dict[str, str]:
+    descriptions = {
+        "lightgbm": {
+            "title": "LightGBM",
+            "style": "Gradient-boosted decision-tree model",
+            "description": (
+                "LightGBM builds an ensemble of decision trees sequentially. Each tree focuses on "
+                "the residual errors left by previous trees. It is strong for tabular data, handles "
+                "nonlinear interactions well, and usually performs very well on structured forecasting features."
+            ),
+            "strengths": (
+                "Strong tabular baseline, nonlinear feature interactions, robust with small-to-medium datasets, "
+                "fast CPU training."
+            ),
+            "caveats": (
+                "Less naturally sequential than recurrent models; relies heavily on explicit lag and rolling features."
+            ),
+        },
+        "mlp": {
+            "title": "MLP Neural Network",
+            "style": "Feed-forward neural network",
+            "description": (
+                "The MLP receives engineered demand, calendar, and weather features and learns nonlinear "
+                "combinations through dense hidden layers. Inputs and targets are standardized during training."
+            ),
+            "strengths": (
+                "Flexible nonlinear function approximator; useful comparison against tree and reservoir models."
+            ),
+            "caveats": (
+                "Can be sensitive to scaling, regularization, early stopping, and small-data regimes."
+            ),
+        },
+        "esn": {
+            "title": "Echo State Network / Reservoir Computer",
+            "style": "Fixed recurrent reservoir with trained linear readout",
+            "description": (
+                "The ESN projects the feature sequence through a fixed random recurrent reservoir. Only the "
+                "readout is trained. This creates a nonlinear temporal state representation while keeping "
+                "training lightweight and stable."
+            ),
+            "strengths": (
+                "Very fast training, strong temporal inductive bias, useful for autocorrelated dynamical systems."
+            ),
+            "caveats": (
+                "Performance can depend on reservoir hyperparameters and random seed; feature importances are less direct."
+            ),
+        },
+    }
+
+    return descriptions.get(
+        model_name,
+        {
+            "title": model_name,
+            "style": "Model",
+            "description": "No description available.",
+            "strengths": "N/A",
+            "caveats": "N/A",
+        },
+    )
+
+
 def _render_html_dashboard(summary: dict[str, Any], predictions: pd.DataFrame) -> str:
     health = summary["health_status"]
     warnings = summary["warnings"]
@@ -384,6 +453,13 @@ def _render_html_dashboard(summary: dict[str, Any], predictions: pd.DataFrame) -
     ratios = summary["ratios"]
     window = summary["latest_prediction_window"]
     model = summary["model"]
+
+    per_model_latest = summary.get("per_model_latest_metrics", {})
+    per_model_training = summary.get("per_model_training_metrics", {})
+
+    all_model_names = sorted(
+        set(per_model_training.keys()) | set(per_model_latest.keys())
+    )
 
     health_class = {
         "healthy": "healthy",
@@ -396,13 +472,94 @@ def _render_html_dashboard(summary: dict[str, Any], predictions: pd.DataFrame) -
     if not warning_items:
         warning_items = "<li>None</li>"
 
+    generated_at = html.escape(str(summary["created_at_utc"]))
+
+    # Overview model comparison rows
+    model_metric_rows = []
+    for model_name in all_model_names:
+        train_m = per_model_training.get(model_name, {})
+        latest_m = per_model_latest.get(model_name, {})
+        selected = "✓" if model_name == model.get("model_name") else ""
+
+        model_metric_rows.append(
+            f"""
+            <tr>
+              <td><strong>{html.escape(model_name)}</strong> {selected}</td>
+              <td>{_format_float(train_m.get("mae"))}</td>
+              <td>{_format_float(train_m.get("rmse"))}</td>
+              <td>{_format_pct(train_m.get("mape"))}</td>
+              <td>{_format_float(train_m.get("bias"))}</td>
+              <td>{_format_float(latest_m.get("mae"))}</td>
+              <td>{_format_pct(latest_m.get("mape"))}</td>
+            </tr>
+            """
+        )
+
+    # Per-model detail cards
+    model_detail_cards = []
+    for model_name in all_model_names:
+        desc = _model_description(model_name)
+        train_m = per_model_training.get(model_name, {})
+        latest_m = per_model_latest.get(model_name, {})
+        selected_badge = (
+            '<span class="mini-badge selected">selected model</span>'
+            if model_name == model.get("model_name")
+            else ""
+        )
+
+        model_detail_cards.append(
+            f"""
+            <div class="model-card">
+              <div class="model-card-header">
+                <div>
+                  <h3>{html.escape(desc["title"])}</h3>
+                  <p class="model-style">{html.escape(desc["style"])}</p>
+                </div>
+                {selected_badge}
+              </div>
+              <p>{html.escape(desc["description"])}</p>
+
+              <div class="model-grid">
+                <div>
+                  <h4>Walk-forward performance</h4>
+                  <table>
+                    <tr><th>Metric</th><th>Value</th></tr>
+                    <tr><td>MAE</td><td>{_format_float(train_m.get("mae_mean"))}</td></tr>
+                    <tr><td>RMSE</td><td>{_format_float(train_m.get("rmse_mean"))}</td></tr>
+                    <tr><td>MAPE</td><td>{_format_pct(train_m.get("mape_mean"))}</td></tr>
+                    <tr><td>Bias</td><td>{_format_float(train_m.get("bias_mean"))}</td></tr>
+                  </table>
+                </div>
+                <div>
+                  <h4>Latest 24h performance</h4>
+                  <table>
+                    <tr><th>Metric</th><th>Value</th></tr>
+                    <tr><td>MAE</td><td>{_format_float(latest_m.get("mae"))}</td></tr>
+                    <tr><td>RMSE</td><td>{_format_float(latest_m.get("rmse"))}</td></tr>
+                    <tr><td>MAPE</td><td>{_format_pct(latest_m.get("mape"))}</td></tr>
+                    <tr><td>Bias</td><td>{_format_float(latest_m.get("bias"))}</td></tr>
+                  </table>
+                </div>
+              </div>
+
+              <div class="model-notes">
+                <p><strong>Strengths:</strong> {html.escape(desc["strengths"])}</p>
+                <p><strong>Caveats:</strong> {html.escape(desc["caveats"])}</p>
+              </div>
+            </div>
+            """
+        )
+
+    # Latest prediction sample table
     show_cols = [
         c
         for c in [
             "timestamp_utc",
-            "prediction_mwh",
             "demand_mwh",
-            "error",
+            "prediction_mwh_esn",
+            "prediction_mwh_lightgbm",
+            "prediction_mwh_mlp",
+            "prediction_mwh",
             "absolute_error",
             "absolute_percentage_error",
         ]
@@ -425,8 +582,6 @@ def _render_html_dashboard(summary: dict[str, Any], predictions: pd.DataFrame) -
 
     table_header = "".join(f"<th>{html.escape(col)}</th>" for col in show_cols)
 
-    generated_at = html.escape(str(summary["created_at_utc"]))
-
     return f"""<!doctype html>
 <html>
 <head>
@@ -435,72 +590,69 @@ def _render_html_dashboard(summary: dict[str, Any], predictions: pd.DataFrame) -
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     :root {{
-      --bg: #0f172a;
-      --panel: #111827;
-      --panel2: #1f2937;
+      --bg: #07111f;
+      --panel: #101827;
+      --panel2: #162033;
+      --panel3: #1e293b;
       --text: #e5e7eb;
-      --muted: #9ca3af;
-      --line: #374151;
+      --muted: #94a3b8;
+      --line: #334155;
       --good: #22c55e;
       --watch: #f59e0b;
       --bad: #ef4444;
       --unknown: #94a3b8;
       --accent: #38bdf8;
+      --accent2: #a78bfa;
     }}
 
-    * {{
-      box-sizing: border-box;
-    }}
+    * {{ box-sizing: border-box; }}
 
     body {{
       margin: 0;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: linear-gradient(180deg, #020617 0%, #0f172a 100%);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(56, 189, 248, 0.18), transparent 34rem),
+        radial-gradient(circle at top right, rgba(167, 139, 250, 0.14), transparent 30rem),
+        linear-gradient(180deg, #020617 0%, var(--bg) 100%);
       color: var(--text);
       line-height: 1.55;
     }}
 
     main {{
-      max-width: 1200px;
+      max-width: 1240px;
       margin: 0 auto;
-      padding: 40px 24px 64px;
+      padding: 36px 22px 64px;
     }}
 
-    a {{
-      color: var(--accent);
-      text-decoration: none;
-    }}
-
-    a:hover {{
-      text-decoration: underline;
-    }}
+    a {{ color: var(--accent); text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
 
     .hero {{
       display: grid;
       grid-template-columns: 1fr auto;
       gap: 24px;
       align-items: start;
-      margin-bottom: 28px;
+      margin-bottom: 20px;
     }}
 
     .title {{
       margin: 0;
-      font-size: 2.2rem;
-      letter-spacing: -0.03em;
+      font-size: 2.25rem;
+      letter-spacing: -0.04em;
     }}
 
     .subtitle {{
       margin-top: 8px;
       color: var(--muted);
-      max-width: 850px;
+      max-width: 900px;
     }}
 
     .badge {{
       display: inline-flex;
       align-items: center;
       border-radius: 999px;
-      padding: 8px 14px;
-      font-weight: 700;
+      padding: 9px 15px;
+      font-weight: 800;
       text-transform: uppercase;
       letter-spacing: 0.08em;
       font-size: 0.82rem;
@@ -511,40 +663,71 @@ def _render_html_dashboard(summary: dict[str, Any], predictions: pd.DataFrame) -
     .badge.healthy {{
       color: var(--good);
       border-color: rgba(34, 197, 94, 0.5);
-      background: rgba(34, 197, 94, 0.08);
+      background: rgba(34, 197, 94, 0.09);
     }}
 
     .badge.watch {{
       color: var(--watch);
       border-color: rgba(245, 158, 11, 0.5);
-      background: rgba(245, 158, 11, 0.08);
+      background: rgba(245, 158, 11, 0.09);
     }}
 
     .badge.degraded {{
       color: var(--bad);
       border-color: rgba(239, 68, 68, 0.5);
-      background: rgba(239, 68, 68, 0.08);
+      background: rgba(239, 68, 68, 0.09);
     }}
 
     .badge.unknown {{
       color: var(--unknown);
       border-color: rgba(148, 163, 184, 0.5);
-      background: rgba(148, 163, 184, 0.08);
+      background: rgba(148, 163, 184, 0.09);
     }}
+
+    .tabs {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 26px 0 18px;
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      padding: 10px 0;
+      backdrop-filter: blur(12px);
+    }}
+
+    .tab-button {{
+      border: 1px solid var(--line);
+      color: var(--muted);
+      background: rgba(16, 24, 39, 0.88);
+      border-radius: 999px;
+      padding: 10px 14px;
+      cursor: pointer;
+      font-weight: 700;
+    }}
+
+    .tab-button.active {{
+      color: #ffffff;
+      border-color: rgba(56, 189, 248, 0.7);
+      background: linear-gradient(135deg, rgba(56, 189, 248, 0.22), rgba(167, 139, 250, 0.18));
+    }}
+
+    .tab-panel {{ display: none; }}
+    .tab-panel.active {{ display: block; }}
 
     .grid {{
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 16px;
-      margin: 24px 0;
+      margin: 20px 0;
     }}
 
     .card {{
-      background: rgba(17, 24, 39, 0.92);
+      background: rgba(16, 24, 39, 0.88);
       border: 1px solid var(--line);
-      border-radius: 16px;
+      border-radius: 18px;
       padding: 18px;
-      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.25);
+      box-shadow: 0 18px 60px rgba(0, 0, 0, 0.25);
     }}
 
     .card .label {{
@@ -554,9 +737,9 @@ def _render_html_dashboard(summary: dict[str, Any], predictions: pd.DataFrame) -
     }}
 
     .card .value {{
-      font-size: 1.8rem;
-      font-weight: 800;
-      letter-spacing: -0.03em;
+      font-size: 1.75rem;
+      font-weight: 850;
+      letter-spacing: -0.04em;
     }}
 
     .card .small {{
@@ -565,12 +748,13 @@ def _render_html_dashboard(summary: dict[str, Any], predictions: pd.DataFrame) -
       font-size: 0.88rem;
     }}
 
-    section {{
-      margin-top: 28px;
-      background: rgba(17, 24, 39, 0.72);
+    section, .section {{
+      margin-top: 22px;
+      background: rgba(16, 24, 39, 0.74);
       border: 1px solid var(--line);
-      border-radius: 18px;
+      border-radius: 20px;
       padding: 22px;
+      box-shadow: 0 18px 60px rgba(0, 0, 0, 0.18);
     }}
 
     h2 {{
@@ -578,11 +762,16 @@ def _render_html_dashboard(summary: dict[str, Any], predictions: pd.DataFrame) -
       letter-spacing: -0.02em;
     }}
 
+    h3 {{
+      margin-bottom: 8px;
+    }}
+
     table {{
       width: 100%;
       border-collapse: collapse;
       overflow: hidden;
-      border-radius: 10px;
+      border-radius: 12px;
+      font-size: 0.94rem;
     }}
 
     th, td {{
@@ -594,13 +783,11 @@ def _render_html_dashboard(summary: dict[str, Any], predictions: pd.DataFrame) -
 
     th {{
       color: var(--muted);
-      font-weight: 700;
-      background: rgba(31, 41, 55, 0.7);
+      font-weight: 800;
+      background: rgba(30, 41, 59, 0.72);
     }}
 
-    tr:last-child td {{
-      border-bottom: none;
-    }}
+    tr:last-child td {{ border-bottom: none; }}
 
     code {{
       background: rgba(148, 163, 184, 0.12);
@@ -620,26 +807,19 @@ def _render_html_dashboard(summary: dict[str, Any], predictions: pd.DataFrame) -
     .step {{
       padding: 8px 11px;
       border: 1px solid var(--line);
-      background: rgba(31, 41, 55, 0.8);
+      background: rgba(30, 41, 59, 0.8);
       border-radius: 999px;
       color: var(--text);
       font-size: 0.9rem;
     }}
 
-    .arrow {{
-      color: var(--muted);
-    }}
-
-    .plots {{
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 18px;
-    }}
+    .arrow {{ color: var(--muted); }}
 
     .plot {{
       background: #ffffff;
-      border-radius: 12px;
+      border-radius: 14px;
       padding: 12px;
+      margin-top: 10px;
     }}
 
     .plot img {{
@@ -653,29 +833,80 @@ def _render_html_dashboard(summary: dict[str, Any], predictions: pd.DataFrame) -
       font-size: 0.95rem;
     }}
 
-    ul {{
-      margin-top: 8px;
+    .model-card {{
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+      background: rgba(30, 41, 59, 0.48);
+      margin-bottom: 18px;
     }}
 
-    @media (max-width: 900px) {{
-      .hero {{
-        grid-template-columns: 1fr;
-      }}
-      .grid {{
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-      }}
+    .model-card-header {{
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: start;
+    }}
+
+    .model-card h3 {{
+      margin: 0;
+    }}
+
+    .model-style {{
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 0.94rem;
+    }}
+
+    .model-grid {{
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-top: 12px;
+    }}
+
+    .model-notes {{
+      margin-top: 12px;
+      color: var(--muted);
+    }}
+
+    .mini-badge {{
+      display: inline-flex;
+      white-space: nowrap;
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 0.78rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }}
+
+    .mini-badge.selected {{
+      color: var(--good);
+      border: 1px solid rgba(34, 197, 94, 0.5);
+      background: rgba(34, 197, 94, 0.10);
+    }}
+
+    .two-col {{
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+    }}
+
+    .scroll-table {{
+      overflow-x: auto;
+    }}
+
+    @media (max-width: 960px) {{
+      .hero {{ grid-template-columns: 1fr; }}
+      .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+      .model-grid, .two-col {{ grid-template-columns: 1fr; }}
     }}
 
     @media (max-width: 620px) {{
-      .grid {{
-        grid-template-columns: 1fr;
-      }}
-      main {{
-        padding: 28px 14px 48px;
-      }}
-      .title {{
-        font-size: 1.7rem;
-      }}
+      .grid {{ grid-template-columns: 1fr; }}
+      main {{ padding: 26px 14px 48px; }}
+      .title {{ font-size: 1.7rem; }}
     }}
   </style>
 </head>
@@ -685,8 +916,9 @@ def _render_html_dashboard(summary: dict[str, Any], predictions: pd.DataFrame) -
     <div>
       <h1 class="title">PowerForecastMLOps Dashboard</h1>
       <p class="subtitle">
-        Live electricity-demand forecasting pipeline using EIA demand data, Open-Meteo weather data,
-        leakage-safe feature engineering, walk-forward LightGBM training, batch prediction, and monitoring.
+        Live electricity-demand forecasting system using public EIA demand data and Open-Meteo weather data.
+        The pipeline compares LightGBM, an MLP neural network, and an Echo State Network under the same
+        leakage-safe walk-forward protocol.
       </p>
       <p class="note">Generated at: <code>{generated_at}</code></p>
     </div>
@@ -695,143 +927,181 @@ def _render_html_dashboard(summary: dict[str, Any], predictions: pd.DataFrame) -
     </div>
   </div>
 
-  <div class="grid">
-    <div class="card">
-      <div class="label">Latest MAE</div>
-      <div class="value">{_format_float(latest["mae"])}</div>
-      <div class="small">MWh over latest 24h window</div>
-    </div>
-    <div class="card">
-      <div class="label">Latest MAPE</div>
-      <div class="value">{_format_pct(latest["mape"])}</div>
-      <div class="small">Realized latest-window error</div>
-    </div>
-    <div class="card">
-      <div class="label">Model vs baseline</div>
-      <div class="value">{_format_float(ratios["latest_mae_vs_best_baseline_mae"], 3)}×</div>
-      <div class="small">Latest MAE / best baseline MAE</div>
-    </div>
-    <div class="card">
-      <div class="label">Feature count</div>
-      <div class="value">{model["feature_count"]}</div>
-      <div class="small">Validated model input schema</div>
-    </div>
+  <div class="tabs">
+    <button class="tab-button active" onclick="openTab(event, 'overview')">Overview</button>
+    <button class="tab-button" onclick="openTab(event, 'models')">Models</button>
+    <button class="tab-button" onclick="openTab(event, 'data')">Data & Pipeline</button>
+    <button class="tab-button" onclick="openTab(event, 'predictions')">Latest Predictions</button>
+    <button class="tab-button" onclick="openTab(event, 'diagnostics')">Diagnostics</button>
   </div>
 
-  <section>
-    <h2>Pipeline overview</h2>
-    <div class="pipeline">
-      <span class="step">EIA + Open-Meteo APIs</span>
-      <span class="arrow">→</span>
-      <span class="step">Raw data validation</span>
-      <span class="arrow">→</span>
-      <span class="step">Leakage-safe features</span>
-      <span class="arrow">→</span>
-      <span class="step">Walk-forward backtest</span>
-      <span class="arrow">→</span>
-      <span class="step">LightGBM training</span>
-      <span class="arrow">→</span>
-      <span class="step">Batch prediction</span>
-      <span class="arrow">→</span>
-      <span class="step">Monitoring report</span>
-      <span class="arrow">→</span>
-      <span class="step">GitHub Pages</span>
-    </div>
-  </section>
-
-  <section>
-    <h2>Warnings</h2>
-    <ul>{warning_items}</ul>
-  </section>
-
-  <section>
-    <h2>Latest prediction window</h2>
-    <table>
-      <tr><th>Item</th><th>Value</th></tr>
-      <tr><td>Min timestamp</td><td><code>{html.escape(str(window["min_timestamp"]))}</code></td></tr>
-      <tr><td>Max timestamp</td><td><code>{html.escape(str(window["max_timestamp"]))}</code></td></tr>
-      <tr><td>Rows</td><td>{window["n_rows"]}</td></tr>
-      <tr><td>Has actuals</td><td>{window["has_actuals"]}</td></tr>
-    </table>
-  </section>
-
-  <section>
-    <h2>Reference performance</h2>
-    <table>
-      <tr><th>Reference</th><th>MAE</th><th>RMSE</th><th>MAPE</th></tr>
-      <tr>
-        <td>Latest realized window</td>
-        <td>{_format_float(latest["mae"])}</td>
-        <td>{_format_float(latest["rmse"])}</td>
-        <td>{_format_pct(latest["mape"])}</td>
-      </tr>
-      <tr>
-        <td>Walk-forward LightGBM average</td>
-        <td>{_format_float(training["mae"])}</td>
-        <td>{_format_float(training["rmse"])}</td>
-        <td>{_format_pct(training["mape"])}</td>
-      </tr>
-      <tr>
-        <td>Best baseline: {html.escape(str(baseline["name"]))}</td>
-        <td>{_format_float(baseline["mae"])}</td>
-        <td>{_format_float(baseline["rmse"])}</td>
-        <td>N/A</td>
-      </tr>
-    </table>
-  </section>
-
-  <section>
-    <h2>Model metadata</h2>
-    <table>
-      <tr><th>Item</th><th>Value</th></tr>
-      <tr><td>Model name</td><td><code>{html.escape(str(model["model_name"]))}</code></td></tr>
-      <tr><td>Model path</td><td><code>{html.escape(str(model["model_path"]))}</code></td></tr>
-      <tr><td>Trained at</td><td><code>{html.escape(str(model["model_trained_at_utc"]))}</code></td></tr>
-      <tr><td>Latest MAE / training MAE</td><td>{_format_float(ratios["latest_mae_vs_training_mae"], 3)}</td></tr>
-      <tr><td>Latest MAE / best baseline MAE</td><td>{_format_float(ratios["latest_mae_vs_best_baseline_mae"], 3)}</td></tr>
-    </table>
-  </section>
-
-  <section>
-    <h2>Plots</h2>
-    <div class="plots">
-      <div>
-        <h3>Latest predictions vs actuals</h3>
-        <div class="plot"><img src="figures/latest_predictions.png" alt="Latest predictions plot"></div>
+  <div id="overview" class="tab-panel active">
+    <div class="grid">
+      <div class="card">
+        <div class="label">Selected model</div>
+        <div class="value">{html.escape(str(model["model_name"]))}</div>
+        <div class="small">Best walk-forward MAE</div>
       </div>
-      <div>
-        <h3>Model comparison</h3>
-        <div class="plot"><img src="figures/model_comparison.png" alt="Model comparison plot"></div>
+      <div class="card">
+        <div class="label">Latest MAE</div>
+        <div class="value">{_format_float(latest["mae"])}</div>
+        <div class="small">MWh over latest 24h window</div>
       </div>
-      <div>
-        <h3>Feature importance / model explanation</h3>
-        <div class="plot"><img src="figures/lightgbm_feature_importance.png" alt="Feature importance plot"></div>
+      <div class="card">
+        <div class="label">Latest MAPE</div>
+        <div class="value">{_format_pct(latest["mape"])}</div>
+        <div class="small">Realized latest-window error</div>
       </div>
-      <div>
-        <h3>Baseline comparison</h3>
-        <div class="plot"><img src="figures/backtest_baselines.png" alt="Baseline comparison plot"></div>
+      <div class="card">
+        <div class="label">Best model / baseline</div>
+        <div class="value">{_format_float(ratios["latest_mae_vs_best_baseline_mae"], 3)}×</div>
+        <div class="small">Latest MAE / best baseline MAE</div>
       </div>
     </div>
-  </section>
 
-  <section>
-    <h2>Latest prediction samples</h2>
-    <table>
-      <tr>{table_header}</tr>
-      {''.join(prediction_rows)}
-    </table>
-  </section>
+    <section>
+      <h2>Model comparison</h2>
+      <div class="scroll-table">
+        <table>
+          <tr>
+            <th>Model</th>
+            <th>Walk-forward MAE</th>
+            <th>Walk-forward RMSE</th>
+            <th>Walk-forward MAPE</th>
+            <th>Walk-forward Bias</th>
+            <th>Latest MAE</th>
+            <th>Latest MAPE</th>
+          </tr>
+          {''.join(model_metric_rows)}
+          <tr>
+            <td><strong>Best baseline: {html.escape(str(baseline["name"]))}</strong></td>
+            <td>{_format_float(baseline["mae"])}</td>
+            <td>{_format_float(baseline["rmse"])}</td>
+            <td>N/A</td>
+            <td>N/A</td>
+            <td>N/A</td>
+            <td>N/A</td>
+          </tr>
+        </table>
+      </div>
+    </section>
 
-  <section>
-    <h2>Interpretation</h2>
-    <p>
-      This report checks whether the latest prediction window is consistent with the model's
-      walk-forward validation performance and whether it remains competitive with the strongest
-      naive baseline. A healthy status does not mean the model is perfect; it means there is no
-      obvious degradation signal in the latest available window.
-    </p>
-  </section>
+    <section>
+      <h2>Latest prediction graph</h2>
+      <p class="note">The plot compares actual demand with each model's prediction over the latest 24 known hours.</p>
+      <div class="plot"><img src="figures/latest_predictions.png" alt="Latest predictions by model"></div>
+    </section>
+
+    <section>
+      <h2>Warnings</h2>
+      <ul>{warning_items}</ul>
+    </section>
+  </div>
+
+  <div id="models" class="tab-panel">
+    <section>
+      <h2>Model details</h2>
+      <p class="note">
+        All models are evaluated using the same leakage-safe feature table and the same walk-forward validation folds.
+      </p>
+      {''.join(model_detail_cards)}
+    </section>
+  </div>
+
+  <div id="data" class="tab-panel">
+    <section>
+      <h2>Dataset</h2>
+      <table>
+        <tr><th>Item</th><th>Value</th></tr>
+        <tr><td>Demand source</td><td>EIA Open Data API, California ISO hourly demand</td></tr>
+        <tr><td>Weather source</td><td>Open-Meteo hourly weather, Los Angeles proxy location</td></tr>
+        <tr><td>Latest prediction window start</td><td><code>{html.escape(str(window["min_timestamp"]))}</code></td></tr>
+        <tr><td>Latest prediction window end</td><td><code>{html.escape(str(window["max_timestamp"]))}</code></td></tr>
+        <tr><td>Rows in latest prediction window</td><td>{window["n_rows"]}</td></tr>
+        <tr><td>Feature count</td><td>{model["feature_count"]}</td></tr>
+      </table>
+    </section>
+
+    <section>
+      <h2>Pipeline overview</h2>
+      <div class="pipeline">
+        <span class="step">EIA + Open-Meteo APIs</span>
+        <span class="arrow">→</span>
+        <span class="step">Raw data validation</span>
+        <span class="arrow">→</span>
+        <span class="step">Leakage-safe features</span>
+        <span class="arrow">→</span>
+        <span class="step">Walk-forward backtest</span>
+        <span class="arrow">→</span>
+        <span class="step">Model comparison</span>
+        <span class="arrow">→</span>
+        <span class="step">Batch prediction</span>
+        <span class="arrow">→</span>
+        <span class="step">Monitoring report</span>
+        <span class="arrow">→</span>
+        <span class="step">GitHub Pages</span>
+      </div>
+    </section>
+  </div>
+
+  <div id="predictions" class="tab-panel">
+    <section>
+      <h2>Latest prediction samples</h2>
+      <div class="scroll-table">
+        <table>
+          <tr>{table_header}</tr>
+          {''.join(prediction_rows)}
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <div id="diagnostics" class="tab-panel">
+    <section>
+      <h2>Model comparison plot</h2>
+      <div class="plot"><img src="figures/model_comparison.png" alt="Model comparison plot"></div>
+    </section>
+
+    <section>
+      <h2>Feature importance / explanation</h2>
+      <p class="note">
+        Tree-based models expose native feature importance. Neural and reservoir models do not provide the same direct interpretation,
+        so the report shows a placeholder when the selected model has no native feature importances.
+      </p>
+      <div class="plot"><img src="figures/lightgbm_feature_importance.png" alt="Feature importance plot"></div>
+    </section>
+
+    <section>
+      <h2>Baseline comparison</h2>
+      <div class="plot"><img src="figures/backtest_baselines.png" alt="Baseline comparison plot"></div>
+    </section>
+
+    <section>
+      <h2>Model metadata</h2>
+      <table>
+        <tr><th>Item</th><th>Value</th></tr>
+        <tr><td>Selected model</td><td><code>{html.escape(str(model["model_name"]))}</code></td></tr>
+        <tr><td>Model path</td><td><code>{html.escape(str(model["model_path"]))}</code></td></tr>
+        <tr><td>Trained at</td><td><code>{html.escape(str(model["model_trained_at_utc"]))}</code></td></tr>
+        <tr><td>Latest MAE / training MAE</td><td>{_format_float(ratios["latest_mae_vs_training_mae"], 3)}</td></tr>
+        <tr><td>Latest MAE / best baseline MAE</td><td>{_format_float(ratios["latest_mae_vs_best_baseline_mae"], 3)}</td></tr>
+      </table>
+    </section>
+  </div>
 </main>
+
+<script>
+function openTab(event, tabId) {{
+  const panels = document.querySelectorAll('.tab-panel');
+  panels.forEach(panel => panel.classList.remove('active'));
+
+  const buttons = document.querySelectorAll('.tab-button');
+  buttons.forEach(button => button.classList.remove('active'));
+
+  document.getElementById(tabId).classList.add('active');
+  event.currentTarget.classList.add('active');
+}}
+</script>
 </body>
 </html>
 """

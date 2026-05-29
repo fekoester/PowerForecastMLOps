@@ -189,25 +189,42 @@ def train_and_compare_models(
         "beats_baseline": best_model_mae < baseline_mae,
     }
 
-    # Train final selected model on all currently available data.
-    final_model = make_model(best_model_name, best_model_config)
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=ConvergenceWarning)
-        final_model.fit(df[feature_columns], df[target_column])
+    # Train final versions of all candidate models on all currently available data.
+    final_models = {}
+
+    for model_name, model_config in active_models.items():
+        final_model = make_model(model_name, model_config)
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=ConvergenceWarning)
+            final_model.fit(df[feature_columns], df[target_column])
+
+        final_models[model_name] = final_model
+
+    selected_model = final_models[best_model_name]
 
     model_path = Path(model_path)
     model_path.parent.mkdir(parents=True, exist_ok=True)
 
+    trained_at_utc = datetime.now(timezone.utc).isoformat()
+
     model_bundle = {
-        "model": final_model,
+        # Backward-compatible best model access
+        "model": selected_model,
         "model_name": best_model_name,
+
+        # New multi-model access
+        "models": final_models,
+        "best_model_name": best_model_name,
+
         "feature_columns": feature_columns,
         "target_column": target_column,
         "timestamp_column": timestamp_column,
-        "trained_at_utc": datetime.now(timezone.utc).isoformat(),
+        "trained_at_utc": trained_at_utc,
         "model_config": best_model_config,
         "all_model_configs": active_models,
         "backtest_aggregate": best_model_metrics,
+        "all_backtest_results": model_results,
         "baseline_comparison": comparison,
     }
     joblib.dump(model_bundle, model_path)

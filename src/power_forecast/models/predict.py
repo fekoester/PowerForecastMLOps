@@ -39,10 +39,22 @@ def _validate_feature_schema(df: pd.DataFrame, feature_columns: list[str]) -> No
     if missing:
         raise ValueError(f"Input data missing model feature columns: {missing}")
 
-    extra = [col for col in df.columns if col not in set(feature_columns)]
-    # Extra columns are allowed because timestamp/target may be present.
-    # We only enforce that all required model features exist.
-    _ = extra
+
+def _get_models_from_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
+    """Return all available final models.
+
+    New bundles contain bundle["models"].
+    Older bundles only contain bundle["model"].
+    """
+    if "models" in bundle and isinstance(bundle["models"], dict):
+        return bundle["models"]
+
+    model_name = bundle.get("model_name", "model")
+    return {model_name: bundle["model"]}
+
+
+def _safe_prediction_column(model_name: str) -> str:
+    return f"prediction_mwh_{model_name}"
 
 
 def run_batch_prediction(
@@ -57,7 +69,8 @@ def run_batch_prediction(
     n_latest_rows: int,
 ) -> dict[str, Any]:
     bundle = load_model_bundle(model_path)
-    model = bundle["model"]
+    models = _get_models_from_bundle(bundle)
+    best_model_name = bundle.get("best_model_name", bundle.get("model_name", "unknown"))
     feature_columns = list(bundle["feature_columns"])
 
     df = pd.read_csv(input_path)
@@ -72,19 +85,37 @@ def run_batch_prediction(
         )
 
     pred_df = df.tail(n_latest_rows).copy()
-    pred_df[prediction_column] = model.predict(pred_df[feature_columns])
 
-    # If target is available, compute realized error. In future forecasting this will not be known yet.
+    per_model_metrics: dict[str, dict[str, float]] = {}
+    prediction_columns_by_model: dict[str, str] = {}
+
+    for model_name, model in models.items():
+        col = _safe_prediction_column(model_name)
+        prediction_columns_by_model[model_name] = col
+        pred_df[col] = model.predict(pred_df[feature_columns])
+
+    if best_model_name not in prediction_columns_by_model:
+        raise RuntimeError(
+            f"Best model {best_model_name} not found in available prediction models: "
+            f"{list(prediction_columns_by_model)}"
+        )
+
+    best_prediction_col = prediction_columns_by_model[best_model_name]
+    pred_df[prediction_column] = pred_df[best_prediction_col]
+
     has_actuals = target_column in pred_df.columns and pred_df[target_column].notna().all()
 
-    metrics = None
+    best_metrics = None
     if has_actuals:
-        metrics = {
-            "mae": mae(pred_df[target_column], pred_df[prediction_column]),
-            "rmse": rmse(pred_df[target_column], pred_df[prediction_column]),
-            "mape": mape(pred_df[target_column], pred_df[prediction_column]),
-            "bias": bias(pred_df[target_column], pred_df[prediction_column]),
-        }
+        for model_name, col in prediction_columns_by_model.items():
+            per_model_metrics[model_name] = {
+                "mae": mae(pred_df[target_column], pred_df[col]),
+                "rmse": rmse(pred_df[target_column], pred_df[col]),
+                "mape": mape(pred_df[target_column], pred_df[col]),
+                "bias": bias(pred_df[target_column], pred_df[col]),
+            }
+
+        best_metrics = per_model_metrics[best_model_name]
 
         pred_df["error"] = pred_df[prediction_column] - pred_df[target_column]
         pred_df["absolute_error"] = pred_df["error"].abs()
@@ -95,7 +126,11 @@ def run_batch_prediction(
     output_columns = [
         timestamp_column,
         prediction_column,
+        *prediction_columns_by_model.values(),
     ]
+
+    # Avoid duplicate prediction column if best prediction column already appears.
+    output_columns = list(dict.fromkeys(output_columns))
 
     if has_actuals:
         output_columns.extend(
@@ -115,7 +150,7 @@ def run_batch_prediction(
         pred_df=pred_df,
         timestamp_column=timestamp_column,
         target_column=target_column,
-        prediction_column=prediction_column,
+        prediction_columns_by_model=prediction_columns_by_model,
         figure_path=figure_path,
         has_actuals=has_actuals,
     )
@@ -127,16 +162,20 @@ def run_batch_prediction(
         "output_path": str(output_path),
         "figure_path": str(figure_path),
         "model_trained_at_utc": bundle.get("trained_at_utc"),
-        "model_name": bundle.get("model_name", "unknown"),
+        "model_name": best_model_name,
+        "best_model_name": best_model_name,
+        "available_models": list(models.keys()),
+        "prediction_columns_by_model": prediction_columns_by_model,
         "n_prediction_rows": int(len(pred_df)),
         "min_timestamp": str(pred_df[timestamp_column].min()),
         "max_timestamp": str(pred_df[timestamp_column].max()),
         "feature_count": int(len(feature_columns)),
         "prediction_column": prediction_column,
         "has_actuals": bool(has_actuals),
-        "metrics": metrics,
+        "metrics": best_metrics,
+        "per_model_metrics": per_model_metrics,
         "note": (
-            "This prediction job scores the latest known feature rows. "
+            "This prediction job scores the latest known feature rows for all candidate models. "
             "It validates model feature schema before inference and writes prediction metadata."
         ),
     }
@@ -152,33 +191,36 @@ def _plot_latest_predictions(
     pred_df: pd.DataFrame,
     timestamp_column: str,
     target_column: str,
-    prediction_column: str,
+    prediction_columns_by_model: dict[str, str],
     figure_path: str | Path,
     has_actuals: bool,
 ) -> None:
     figure_path = Path(figure_path)
     figure_path.parent.mkdir(parents=True, exist_ok=True)
 
-    plt.figure(figsize=(11, 5))
-
-    plt.plot(
-        pred_df[timestamp_column],
-        pred_df[prediction_column],
-        marker="o",
-        label="Prediction",
-    )
+    plt.figure(figsize=(12, 6))
 
     if has_actuals:
         plt.plot(
             pred_df[timestamp_column],
             pred_df[target_column],
             marker="o",
+            linewidth=2.4,
             label="Actual",
+        )
+
+    for model_name, col in prediction_columns_by_model.items():
+        plt.plot(
+            pred_df[timestamp_column],
+            pred_df[col],
+            marker="o",
+            linewidth=1.7,
+            label=model_name,
         )
 
     plt.xlabel("Timestamp")
     plt.ylabel("Demand (MWh)")
-    plt.title("Latest demand predictions")
+    plt.title("Latest demand predictions by model")
     plt.xticks(rotation=35, ha="right")
     plt.legend()
     plt.tight_layout()

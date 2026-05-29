@@ -36,12 +36,15 @@ def run_predict_pipeline(config_path: str) -> None:
     table.add_row("Max timestamp", summary["max_timestamp"])
     table.add_row("Has actuals", str(summary["has_actuals"]))
 
+    table.add_row("Best model", str(summary["best_model_name"]))
+    table.add_row("Available models", ", ".join(summary["available_models"]))
+
     metrics = summary.get("metrics")
     if metrics is not None:
-        table.add_row("MAE", f"{metrics['mae']:.2f}")
-        table.add_row("RMSE", f"{metrics['rmse']:.2f}")
-        table.add_row("MAPE", f"{100 * metrics['mape']:.2f}%")
-        table.add_row("Bias", f"{metrics['bias']:.2f}")
+        table.add_row("Best MAE", f"{metrics['mae']:.2f}")
+        table.add_row("Best RMSE", f"{metrics['rmse']:.2f}")
+        table.add_row("Best MAPE", f"{100 * metrics['mape']:.2f}%")
+        table.add_row("Best Bias", f"{metrics['bias']:.2f}")
 
     table.add_row("Prediction CSV", predict_cfg["output_path"])
     table.add_row("Summary JSON", predict_cfg["summary_path"])

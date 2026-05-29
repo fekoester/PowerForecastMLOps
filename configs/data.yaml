@@ -150,12 +150,12 @@ train:
 
     esn:
       enabled: true
-      reservoir_size: 128
-      spectral_radius: 0.9
+      reservoir_size: 32
+      spectral_radius: 0.1
       input_scale: 0.1
       leaking_rate: 0.5
-      ridge_alpha: 1.0
-      random_state: 42
+      ridge_alpha: 0.01
+      random_state: 43
 
 
 predict:
