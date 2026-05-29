@@ -290,6 +290,26 @@ def _plot_model_comparison(
     plt.close()
 
 
+def _extract_feature_importances(model):
+    """Extract feature importances from plain or wrapped tree models."""
+    if hasattr(model, "feature_importances_"):
+        return model.feature_importances_
+
+    # TransformedTargetRegressor after fit stores fitted estimator in regressor_
+    regressor = getattr(model, "regressor_", None)
+    if regressor is not None:
+        if hasattr(regressor, "feature_importances_"):
+            return regressor.feature_importances_
+
+        # Pipeline case: Pipeline([("x_scaler", ...), ("model", LightGBM)])
+        if hasattr(regressor, "named_steps") and "model" in regressor.named_steps:
+            inner_model = regressor.named_steps["model"]
+            if hasattr(inner_model, "feature_importances_"):
+                return inner_model.feature_importances_
+
+    return None
+
+
 def _plot_feature_importance_or_placeholder(
     model,
     model_name: str,
@@ -300,10 +320,7 @@ def _plot_feature_importance_or_placeholder(
     figure_path = Path(figure_path)
     figure_path.parent.mkdir(parents=True, exist_ok=True)
 
-    importances = None
-
-    if hasattr(model, "feature_importances_"):
-        importances = model.feature_importances_
+    importances = _extract_feature_importances(model)
 
     if importances is not None:
         importance = pd.DataFrame(
