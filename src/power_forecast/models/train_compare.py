@@ -41,6 +41,34 @@ def _make_recency_weights(
     weights = 0.5 ** (age_days / half_life_days)
     weights = weights.clip(lower=min_weight, upper=1.0)
     return weights
+    
+    
+def _candidate_name(model_name: str, training_window_days: int) -> str:
+    return f"{model_name}_{training_window_days}d"
+
+
+def _base_model_name(candidate_name: str) -> str:
+    # "lightgbm_90d" -> "lightgbm"
+    return candidate_name.rsplit("_", maxsplit=1)[0]
+
+
+def _recent_training_subset(
+    train_df: pd.DataFrame,
+    timestamp_column: str,
+    training_window_days: int,
+) -> pd.DataFrame:
+    """Keep only the most recent N days inside a walk-forward training fold."""
+    train_end = train_df[timestamp_column].max()
+    train_start = train_end - pd.Timedelta(days=training_window_days)
+
+    subset = train_df[train_df[timestamp_column] > train_start].copy()
+
+    if subset.empty:
+        raise RuntimeError(
+            f"Training subset is empty for training_window_days={training_window_days}."
+        )
+
+    return subset
 
 def get_feature_columns(
     df: pd.DataFrame,
@@ -92,6 +120,7 @@ def _evaluate_model_on_folds(
     min_train_days: int,
     validation_window_days: int,
     step_days: int,
+    training_window_days: int,
     recency_weighting_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     folds = make_walk_forward_folds(
@@ -114,7 +143,12 @@ def _evaluate_model_on_folds(
             df[timestamp_column] < fold.valid_end
         )
 
-        train_df = df.loc[train_mask].copy()
+        train_df_full = df.loc[train_mask].copy()
+        train_df = _recent_training_subset(
+            train_df=train_df_full,
+            timestamp_column=timestamp_column,
+            training_window_days=training_window_days,
+        )
         valid_df = df.loc[valid_mask].copy()
 
         X_train = train_df[feature_columns]
@@ -181,6 +215,8 @@ def _evaluate_model_on_folds(
 
     return {
         "model_name": model_name,
+        "training_window_days": training_window_days,
+        "candidate_name": _candidate_name(model_name, training_window_days),
         "aggregate_metrics": aggregate,
         "fold_results": fold_results,
     }
@@ -203,6 +239,7 @@ def train_and_compare_models(
     forecast_safe_features: bool = False,
     allowed_lag_hours: list[int] | None = None,
     recency_weighting_config: dict[str, Any] | None = None,
+    training_windows_days: list[int] | None = None,
 ) -> dict[str, Any]:
     if model_selection_metric != "mae":
         raise ValueError("Currently only model_selection_metric='mae' is supported.")
@@ -222,30 +259,37 @@ def train_and_compare_models(
     active_models = enabled_models(models_config)
     if not active_models:
         raise RuntimeError("No enabled models found in train.models config.")
+    training_windows_days = training_windows_days or [1095]
 
     model_results: dict[str, Any] = {}
 
     for model_name, model_config in active_models.items():
-        result = _evaluate_model_on_folds(
-            df=df,
-            model_name=model_name,
-            model_config=model_config,
-            feature_columns=feature_columns,
-            timestamp_column=timestamp_column,
-            target_column=target_column,
-            min_train_days=min_train_days,
-            validation_window_days=validation_window_days,
-            step_days=step_days,
-            recency_weighting_config=recency_weighting_config,
-        )
-        model_results[model_name] = result
+        for training_window_days in training_windows_days:
+            candidate = _candidate_name(model_name, training_window_days)
+
+            result = _evaluate_model_on_folds(
+                df=df,
+                model_name=model_name,
+                model_config=model_config,
+                feature_columns=feature_columns,
+                timestamp_column=timestamp_column,
+                target_column=target_column,
+                min_train_days=min_train_days,
+                validation_window_days=validation_window_days,
+                step_days=step_days,
+                training_window_days=int(training_window_days),
+                recency_weighting_config=recency_weighting_config,
+            )
+            model_results[candidate] = result
 
     best_model_name = min(
         model_results.keys(),
         key=lambda name: model_results[name]["aggregate_metrics"]["mae_mean"],
     )
+    best_base_model_name = _base_model_name(best_model_name)
+    best_training_window_days = int(best_model_name.rsplit("_", maxsplit=1)[1].removesuffix("d"))
 
-    best_model_config = active_models[best_model_name]
+    best_model_config = active_models[best_base_model_name]
     best_model_metrics = model_results[best_model_name]["aggregate_metrics"]
 
     best_baseline = _load_best_baseline(baseline_backtest_path)
@@ -266,29 +310,45 @@ def train_and_compare_models(
     final_models = {}
 
     for model_name, model_config in active_models.items():
-        final_model = make_model(model_name, model_config)
+        for training_window_days in training_windows_days:
+            candidate = _candidate_name(model_name, int(training_window_days))
 
-        sample_weight = None
-        if recency_weighting_config and bool(recency_weighting_config.get("enabled", False)):
-            apply_to = set(recency_weighting_config.get("apply_to", []))
+            final_train_df = _recent_training_subset(
+                train_df=df,
+                timestamp_column=timestamp_column,
+                training_window_days=int(training_window_days),
+            )
 
-            if model_name in apply_to:
-                sample_weight = _make_recency_weights(
-                    timestamps=df[timestamp_column],
-                    reference_time=df[timestamp_column].max(),
-                    half_life_days=float(recency_weighting_config["half_life_days"]),
-                    min_weight=float(recency_weighting_config.get("min_weight", 0.0)),
-                )
+            final_model = make_model(model_name, model_config)
 
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=ConvergenceWarning)
+            sample_weight = None
+            if recency_weighting_config and bool(recency_weighting_config.get("enabled", False)):
+                apply_to = set(recency_weighting_config.get("apply_to", []))
 
-            if sample_weight is not None:
-                final_model.fit(df[feature_columns], df[target_column], sample_weight=sample_weight)
-            else:
-                final_model.fit(df[feature_columns], df[target_column])
+                if model_name in apply_to or candidate in apply_to:
+                    sample_weight = _make_recency_weights(
+                        timestamps=final_train_df[timestamp_column],
+                        reference_time=final_train_df[timestamp_column].max(),
+                        half_life_days=float(recency_weighting_config["half_life_days"]),
+                        min_weight=float(recency_weighting_config.get("min_weight", 0.0)),
+                    )
 
-        final_models[model_name] = final_model
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=ConvergenceWarning)
+
+                if sample_weight is not None:
+                    final_model.fit(
+                        final_train_df[feature_columns],
+                        final_train_df[target_column],
+                        sample_weight=sample_weight,
+                    )
+                else:
+                    final_model.fit(
+                        final_train_df[feature_columns],
+                        final_train_df[target_column],
+                    )
+
+            final_models[candidate] = final_model
 
     selected_model = final_models[best_model_name]
 
@@ -305,6 +365,9 @@ def train_and_compare_models(
         # New multi-model access
         "models": final_models,
         "best_model_name": best_model_name,
+        "best_base_model_name": best_base_model_name,
+        "best_training_window_days": best_training_window_days,
+        "training_windows_days": training_windows_days,
 
         "feature_columns": feature_columns,
         "target_column": target_column,
@@ -343,6 +406,7 @@ def train_and_compare_models(
         "timestamp_column": timestamp_column,
         "target_column": target_column,
         "n_rows": int(len(df)),
+        "training_windows_days": training_windows_days,
         "n_features": int(len(feature_columns)),
         "feature_columns": feature_columns,
         "model_selection_metric": model_selection_metric,
@@ -351,6 +415,8 @@ def train_and_compare_models(
         "models": model_results,
         "best_model": {
             "name": best_model_name,
+            "base_model_name": best_base_model_name,
+            "training_window_days": best_training_window_days,
             "aggregate_metrics": best_model_metrics,
         },
         "aggregate_metrics": best_model_metrics,

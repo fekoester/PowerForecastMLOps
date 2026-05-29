@@ -401,6 +401,11 @@ def _render_html_report(markdown: str) -> str:
     
     
 def _model_description(model_name: str) -> dict[str, str]:
+    base_model_name = model_name.rsplit("_", maxsplit=1)[0]
+    window_label = ""
+    if model_name.endswith("d") and "_" in model_name:
+        window_label = model_name.rsplit("_", maxsplit=1)[1]
+
     descriptions = {
         "lightgbm": {
             "title": "LightGBM",
@@ -449,8 +454,8 @@ def _model_description(model_name: str) -> dict[str, str]:
         },
     }
 
-    return descriptions.get(
-        model_name,
+    desc = descriptions.get(
+        base_model_name,
         {
             "title": model_name,
             "style": "Model",
@@ -459,6 +464,16 @@ def _model_description(model_name: str) -> dict[str, str]:
             "caveats": "N/A",
         },
     )
+
+    if window_label:
+        desc = dict(desc)
+        desc["title"] = f'{desc["title"]} ({window_label} training window)'
+        desc["description"] = (
+            desc["description"]
+            + f" This candidate is trained only on the most recent {window_label} of available training data."
+        )
+
+    return desc
 
 
 def _render_html_dashboard(

@@ -138,6 +138,13 @@ train:
     - 48
     - 168
     
+  training_windows_days:
+    - 30
+    - 90
+    - 180
+    - 365
+    - 1095
+    
   recency_weighting:
     enabled: true
     half_life_days: 180
