@@ -93,6 +93,12 @@ def build_monitoring_report(
     predictions = pd.read_csv(predictions_path)
     latest_metrics = prediction_summary.get("metrics") or {}
     per_model_latest_metrics = prediction_summary.get("per_model_metrics") or {}
+    latest_window_winner = None
+    if per_model_latest_metrics:
+        latest_window_winner = min(
+            per_model_latest_metrics.keys(),
+            key=lambda name: per_model_latest_metrics[name].get("mae", float("inf")),
+        )
 
     latest_mae = latest_metrics.get("mae")
     latest_rmse = latest_metrics.get("rmse")
@@ -143,6 +149,7 @@ def build_monitoring_report(
             "model_trained_at_utc": prediction_summary.get("model_trained_at_utc"),
             "feature_count": prediction_summary.get("feature_count"),
         },
+        "latest_window_winner": latest_window_winner,
         "latest_metrics": {
             "mae": latest_mae,
             "rmse": latest_rmse,
@@ -479,12 +486,14 @@ def _render_html_dashboard(summary: dict[str, Any], predictions: pd.DataFrame) -
     for model_name in all_model_names:
         train_m = per_model_training.get(model_name, {})
         latest_m = per_model_latest.get(model_name, {})
-        selected = "✓" if model_name == model.get("model_name") else ""
+        production_selected = "production" if model_name == model.get("model_name") else ""
+        latest_selected = "latest" if model_name == summary.get("latest_window_winner") else ""
+        selected = " ".join(x for x in [production_selected, latest_selected] if x)
 
         model_metric_rows.append(
             f"""
             <tr>
-              <td><strong>{html.escape(model_name)}</strong> {selected}</td>
+              <td><strong>{html.escape(model_name)}</strong> <span class="model-tags">{html.escape(selected)}</span></td>
               <td>{_format_float(train_m.get("mae"))}</td>
               <td>{_format_float(train_m.get("rmse"))}</td>
               <td>{_format_pct(train_m.get("mape"))}</td>
@@ -501,11 +510,13 @@ def _render_html_dashboard(summary: dict[str, Any], predictions: pd.DataFrame) -
         desc = _model_description(model_name)
         train_m = per_model_training.get(model_name, {})
         latest_m = per_model_latest.get(model_name, {})
-        selected_badge = (
-            '<span class="mini-badge selected">selected model</span>'
-            if model_name == model.get("model_name")
-            else ""
-        )
+        badges = []
+        if model_name == model.get("model_name"):
+            badges.append('<span class="mini-badge selected">production model</span>')
+        if model_name == summary.get("latest_window_winner"):
+            badges.append('<span class="mini-badge selected">latest 24h winner</span>')
+
+        selected_badge = " ".join(badges)
 
         model_detail_cards.append(
             f"""
@@ -938,10 +949,15 @@ def _render_html_dashboard(summary: dict[str, Any], predictions: pd.DataFrame) -
   <div id="overview" class="tab-panel active">
     <div class="grid">
       <div class="card">
-        <div class="label">Selected model</div>
-        <div class="value">{html.escape(str(model["model_name"]))}</div>
-        <div class="small">Best walk-forward MAE</div>
+          <div class="label">Production model</div>
+          <div class="value">{html.escape(str(model["model_name"]))}</div>
+          <div class="small">Selected by walk-forward MAE</div>
       </div>
+      <div class="card">
+      <div class="label">Latest 24h winner</div>
+      <div class="value">{html.escape(str(summary.get("latest_window_winner", "N/A")))}</div>
+      <div class="small">Best MAE on shown window</div>
+    </div>
       <div class="card">
         <div class="label">Latest MAE</div>
         <div class="value">{_format_float(latest["mae"])}</div>
@@ -958,6 +974,9 @@ def _render_html_dashboard(summary: dict[str, Any], predictions: pd.DataFrame) -
         <div class="small">Latest MAE / best baseline MAE</div>
       </div>
     </div>
+    <p class="note">
+      The production model is selected by average walk-forward validation MAE. The latest 24h winner is the model with the lowest realized MAE on the currently displayed prediction window.
+    </p>
 
     <section>
       <h2>Model comparison</h2>
