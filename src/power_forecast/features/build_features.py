@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+import numpy as np
 
 import pandas as pd
 
@@ -97,6 +98,27 @@ def _add_calendar_features(df: pd.DataFrame, timezone_name: str) -> pd.DataFrame
     return out
 
 
+def _add_cyclic_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Add cyclic encodings for periodic calendar variables.
+
+    These features help models such as MLPs and reservoir computers understand
+    that hour 23 is close to hour 0, Sunday is close to Monday, etc.
+    Tree models can often handle raw integer calendar features, but cyclic
+    encodings are still useful for model comparison.
+    """
+    out = df.copy()
+
+    out["hour_sin"] = np.sin(2.0 * np.pi * out["hour"] / 24.0)
+    out["hour_cos"] = np.cos(2.0 * np.pi * out["hour"] / 24.0)
+
+    out["day_of_week_sin"] = np.sin(2.0 * np.pi * out["day_of_week"] / 7.0)
+    out["day_of_week_cos"] = np.cos(2.0 * np.pi * out["day_of_week"] / 7.0)
+
+    out["month_sin"] = np.sin(2.0 * np.pi * (out["month"] - 1) / 12.0)
+    out["month_cos"] = np.cos(2.0 * np.pi * (out["month"] - 1) / 12.0)
+
+    return out
+
 def _add_weather_features(df: pd.DataFrame, base_temperature_c: float) -> pd.DataFrame:
     out = df.copy()
 
@@ -186,6 +208,7 @@ def build_features(
     same_hour_windows_days: list[int],
     origin_rolling_windows_hours: list[int],
     base_temperature_c: float,
+    use_cyclic_calendar_features: bool,
 ) -> pd.DataFrame:
     validation_status = _load_validation_status(validation_report_path)
     if validation_status == "fail":
@@ -201,6 +224,10 @@ def build_features(
     df = df.sort_values("timestamp_utc").reset_index(drop=True)
 
     df = _add_calendar_features(df, timezone_name=timezone_name)
+
+    if use_cyclic_calendar_features:
+        df = _add_cyclic_calendar_features(df)
+
     df = _add_weather_features(df, base_temperature_c=base_temperature_c)
     df = _add_lag_features(df, lags_hours=lags_hours)
     df = _add_rolling_features(df, windows_hours=rolling_windows_hours)
@@ -236,6 +263,7 @@ def build_features(
         "same_hour_windows_days": same_hour_windows_days,
         "origin_rolling_windows_hours": origin_rolling_windows_hours,
         "base_temperature_c": base_temperature_c,
+        "use_cyclic_calendar_features": use_cyclic_calendar_features,
         "leakage_note": (
             "Lag features use shifted demand. Rolling features are computed from "
             "demand_mwh.shift(1), so current target is not used as an input."

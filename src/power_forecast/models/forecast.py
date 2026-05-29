@@ -33,6 +33,7 @@ def run_future_24h_forecast(
     figure_path: str | Path,
     timestamp_column: str,
     prediction_prefix: str,
+    use_cyclic_calendar_features: bool,
 ) -> dict[str, Any]:
     bundle = joblib.load(model_path)
     models = _get_models_from_bundle(bundle)
@@ -50,6 +51,7 @@ def run_future_24h_forecast(
         same_hour_windows_days=same_hour_windows_days,
         origin_rolling_windows_hours=origin_rolling_windows_hours,
         output_path=features_output_path,
+        use_cyclic_calendar_features=use_cyclic_calendar_features,
     )
 
     _validate_feature_schema(future_features, feature_columns)

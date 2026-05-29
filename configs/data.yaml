@@ -101,6 +101,8 @@ features:
     - 24
 
   base_temperature_c: 18.0
+  
+  use_cyclic_calendar_features: true
 
 
 backtest:

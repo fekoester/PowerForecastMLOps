@@ -29,6 +29,9 @@ def run_feature_pipeline(config_path: str) -> None:
         same_hour_windows_days=list(feature_cfg["same_hour_windows_days"]),
         origin_rolling_windows_hours=list(feature_cfg["origin_rolling_windows_hours"]),
         base_temperature_c=float(feature_cfg["base_temperature_c"]),
+        use_cyclic_calendar_features=bool(
+            feature_cfg.get("use_cyclic_calendar_features", False)
+        ),
     )
 
     feature_columns = [c for c in df.columns if c not in ["timestamp_utc", "demand_mwh"]]

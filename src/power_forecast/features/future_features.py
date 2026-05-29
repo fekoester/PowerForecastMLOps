@@ -10,6 +10,7 @@ from power_forecast.data.weather_forecast import (
 )
 from power_forecast.features.build_features import (
     _add_calendar_features,
+    _add_cyclic_calendar_features,
     _add_weather_features,
 )
 
@@ -101,6 +102,7 @@ def build_future_24h_features(
     same_hour_windows_days: list[int],
     origin_rolling_windows_hours: list[int],
     output_path: str | Path,
+    use_cyclic_calendar_features: bool,
 ) -> pd.DataFrame:
     eia = pd.read_csv(eia_path)
     eia["timestamp_utc"] = pd.to_datetime(eia["timestamp_utc"], utc=True)
@@ -145,6 +147,10 @@ def build_future_24h_features(
         raise RuntimeError(f"Future weather forecast has missing values: {missing}")
 
     future = _add_calendar_features(future, timezone_name=timezone_name)
+
+    if use_cyclic_calendar_features:
+        future = _add_cyclic_calendar_features(future)
+
     future = _add_weather_features(future, base_temperature_c=base_temperature_c)
 
     history = eia.set_index("timestamp_utc")["demand_mwh"]

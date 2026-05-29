@@ -35,6 +35,9 @@ def run_forecast_pipeline(config_path: str) -> None:
         figure_path=forecast_cfg["figure_path"],
         timestamp_column=forecast_cfg["timestamp_column"],
         prediction_prefix=forecast_cfg["prediction_prefix"],
+        use_cyclic_calendar_features=bool(
+            feature_cfg.get("use_cyclic_calendar_features", False)
+        ),
     )
 
     table = Table(title="Future 24h Forecast Summary")
