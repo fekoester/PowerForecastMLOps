@@ -27,9 +27,44 @@ def _load_best_baseline(backtest_path: str | Path) -> dict[str, Any]:
     return report["aggregate_metrics"]["_best_by_mae"]
 
 
-def get_feature_columns(df: pd.DataFrame, timestamp_column: str, target_column: str) -> list[str]:
+def get_feature_columns(
+    df: pd.DataFrame,
+    timestamp_column: str,
+    target_column: str,
+    forecast_safe_features: bool = False,
+    allowed_lag_hours: list[int] | None = None,
+) -> list[str]:
     excluded = {timestamp_column, target_column}
-    return [c for c in df.columns if c not in excluded]
+    columns = [c for c in df.columns if c not in excluded]
+
+    if not forecast_safe_features:
+        return columns
+
+    allowed_lag_hours = allowed_lag_hours or [24, 48, 168]
+    allowed_lag_columns = {f"demand_lag_{h}h" for h in allowed_lag_hours}
+
+    safe_columns = []
+
+    for col in columns:
+        if col.startswith("demand_lag_"):
+            if col in allowed_lag_columns:
+                safe_columns.append(col)
+            continue
+
+        if col.startswith("demand_roll_"):
+            continue
+
+        if col.startswith("demand_origin_roll_"):
+            safe_columns.append(col)
+            continue
+
+        if col.startswith("demand_same_hour_"):
+            safe_columns.append(col)
+            continue
+
+        safe_columns.append(col)
+
+    return safe_columns
 
 
 def _evaluate_model_on_folds(
@@ -133,6 +168,8 @@ def train_and_compare_models(
     step_days: int,
     models_config: dict[str, dict[str, Any]],
     model_selection_metric: str = "mae",
+    forecast_safe_features: bool = False,
+    allowed_lag_hours: list[int] | None = None,
 ) -> dict[str, Any]:
     if model_selection_metric != "mae":
         raise ValueError("Currently only model_selection_metric='mae' is supported.")
@@ -145,6 +182,8 @@ def train_and_compare_models(
         df=df,
         timestamp_column=timestamp_column,
         target_column=target_column,
+        forecast_safe_features=forecast_safe_features,
+        allowed_lag_hours=allowed_lag_hours,
     )
 
     active_models = enabled_models(models_config)
@@ -221,6 +260,8 @@ def train_and_compare_models(
         "target_column": target_column,
         "timestamp_column": timestamp_column,
         "trained_at_utc": trained_at_utc,
+        "forecast_safe_features": forecast_safe_features,
+        "allowed_lag_hours": allowed_lag_hours or [24, 48, 168],
         "model_config": best_model_config,
         "all_model_configs": active_models,
         "backtest_aggregate": best_model_metrics,
@@ -236,7 +277,7 @@ def train_and_compare_models(
     )
 
     _plot_feature_importance_or_placeholder(
-        model=final_model,
+        model=selected_model,
         model_name=best_model_name,
         feature_columns=feature_columns,
         figure_path=feature_importance_path,
@@ -254,6 +295,8 @@ def train_and_compare_models(
         "n_features": int(len(feature_columns)),
         "feature_columns": feature_columns,
         "model_selection_metric": model_selection_metric,
+        "forecast_safe_features": forecast_safe_features,
+        "allowed_lag_hours": allowed_lag_hours or [24, 48, 168],
         "models": model_results,
         "best_model": {
             "name": best_model_name,

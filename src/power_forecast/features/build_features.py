@@ -8,6 +8,7 @@ from typing import Any
 import pandas as pd
 
 
+
 def _load_validation_status(path: str | Path) -> str:
     path = Path(path)
     if not path.exists():
@@ -119,6 +120,48 @@ def _add_rolling_features(df: pd.DataFrame, windows_hours: list[int]) -> pd.Data
 
     return out
 
+def _add_origin_rolling_features(df: pd.DataFrame, windows_hours: list[int]) -> pd.DataFrame:
+    """Rolling demand features available one day before the target timestamp.
+
+    For target time t, this uses demand history ending at t-24h.
+    That makes it safe for direct next-24h/day-ahead forecasting.
+    """
+    out = df.copy()
+
+    shifted_by_day = out["demand_mwh"].shift(24)
+
+    for window in windows_hours:
+        out[f"demand_origin_roll_mean_{window}h"] = shifted_by_day.rolling(window=window).mean()
+        out[f"demand_origin_roll_std_{window}h"] = shifted_by_day.rolling(window=window).std()
+        out[f"demand_origin_roll_min_{window}h"] = shifted_by_day.rolling(window=window).min()
+        out[f"demand_origin_roll_max_{window}h"] = shifted_by_day.rolling(window=window).max()
+
+    return out
+
+
+def _add_same_hour_history_features(df: pd.DataFrame, windows_days: list[int]) -> pd.DataFrame:
+    """Same-hour historical demand statistics.
+
+    For target time t and window 7d, this uses:
+    demand(t-24h), demand(t-48h), ..., demand(t-168h).
+    """
+    out = df.copy()
+
+    for window_days in windows_days:
+        lagged_same_hour = [
+            out["demand_mwh"].shift(24 * day)
+            for day in range(1, window_days + 1)
+        ]
+
+        lagged_df = pd.concat(lagged_same_hour, axis=1)
+
+        out[f"demand_same_hour_mean_{window_days}d"] = lagged_df.mean(axis=1)
+        out[f"demand_same_hour_std_{window_days}d"] = lagged_df.std(axis=1)
+        out[f"demand_same_hour_min_{window_days}d"] = lagged_df.min(axis=1)
+        out[f"demand_same_hour_max_{window_days}d"] = lagged_df.max(axis=1)
+
+    return out
+
 
 def build_features(
     eia_path: str | Path,
@@ -129,6 +172,8 @@ def build_features(
     timezone_name: str,
     lags_hours: list[int],
     rolling_windows_hours: list[int],
+    same_hour_windows_days: list[int],
+    origin_rolling_windows_hours: list[int],
     base_temperature_c: float,
 ) -> pd.DataFrame:
     validation_status = _load_validation_status(validation_report_path)
@@ -148,6 +193,8 @@ def build_features(
     df = _add_weather_features(df, base_temperature_c=base_temperature_c)
     df = _add_lag_features(df, lags_hours=lags_hours)
     df = _add_rolling_features(df, windows_hours=rolling_windows_hours)
+    df = _add_origin_rolling_features(df, windows_hours=origin_rolling_windows_hours)
+    df = _add_same_hour_history_features(df, windows_days=same_hour_windows_days)
 
     # Keep rows where all model features are known.
     # This drops the first 168 hours because lag_168h / rolling_168h need history.
@@ -175,6 +222,8 @@ def build_features(
         "max_timestamp": str(df["timestamp_utc"].max()) if len(df) else None,
         "lags_hours": lags_hours,
         "rolling_windows_hours": rolling_windows_hours,
+        "same_hour_windows_days": same_hour_windows_days,
+        "origin_rolling_windows_hours": origin_rolling_windows_hours,
         "base_temperature_c": base_temperature_c,
         "leakage_note": (
             "Lag features use shifted demand. Rolling features are computed from "

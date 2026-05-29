@@ -26,6 +26,8 @@ def run_feature_pipeline(config_path: str) -> None:
         timezone_name=config["weather"]["timezone"],
         lags_hours=list(feature_cfg["lags_hours"]),
         rolling_windows_hours=list(feature_cfg["rolling_windows_hours"]),
+        same_hour_windows_days=list(feature_cfg["same_hour_windows_days"]),
+        origin_rolling_windows_hours=list(feature_cfg["origin_rolling_windows_hours"]),
         base_temperature_c=float(feature_cfg["base_temperature_c"]),
     )
 

@@ -88,6 +88,14 @@ features:
     - 24
     - 168
 
+  same_hour_windows_days:
+    - 7
+    - 14
+    - 30
+
+  origin_rolling_windows_hours:
+    - 24
+
   base_temperature_c: 18.0
 
 
@@ -103,11 +111,12 @@ backtest:
   step_days: 7
 
   baselines:
-    lag_1h: demand_lag_1h
     lag_24h: demand_lag_24h
+    lag_48h: demand_lag_48h
     lag_168h: demand_lag_168h
-    rolling_mean_24h: demand_roll_mean_24h
-    rolling_mean_168h: demand_roll_mean_168h
+    same_hour_mean_7d: demand_same_hour_mean_7d
+    same_hour_mean_14d: demand_same_hour_mean_14d
+    same_hour_mean_30d: demand_same_hour_mean_30d
 
 
 train:
@@ -118,6 +127,12 @@ train:
 
   timestamp_column: timestamp_utc
   target_column: demand_mwh
+
+  forecast_safe_features: true
+  allowed_lag_hours:
+    - 24
+    - 48
+    - 168
 
   min_train_days: 30
   validation_window_days: 7
@@ -150,12 +165,12 @@ train:
 
     esn:
       enabled: true
-      reservoir_size: 32
-      spectral_radius: 0.1
+      reservoir_size: 128
+      spectral_radius: 0.9
       input_scale: 0.1
       leaking_rate: 0.5
-      ridge_alpha: 0.01
-      random_state: 43
+      ridge_alpha: 1.0
+      random_state: 42
 
 
 predict:
