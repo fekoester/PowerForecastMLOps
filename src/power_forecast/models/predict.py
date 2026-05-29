@@ -127,6 +127,7 @@ def run_batch_prediction(
         "output_path": str(output_path),
         "figure_path": str(figure_path),
         "model_trained_at_utc": bundle.get("trained_at_utc"),
+        "model_name": bundle.get("model_name", "unknown"),
         "n_prediction_rows": int(len(pred_df)),
         "min_timestamp": str(pred_df[timestamp_column].min()),
         "max_timestamp": str(pred_df[timestamp_column].max()),

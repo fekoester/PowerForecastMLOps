@@ -1,6 +1,6 @@
 import pandas as pd
 
-from power_forecast.models.train_lightgbm import _get_feature_columns
+from power_forecast.models.train_compare import get_feature_columns
 
 
 def test_get_feature_columns_excludes_timestamp_and_target():
@@ -13,7 +13,7 @@ def test_get_feature_columns_excludes_timestamp_and_target():
         }
     )
 
-    features = _get_feature_columns(
+    features = get_feature_columns(
         df=df,
         timestamp_column="timestamp_utc",
         target_column="demand_mwh",

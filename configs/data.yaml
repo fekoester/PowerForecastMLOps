@@ -114,6 +114,7 @@ train:
   output_path: reports/metrics/train_lightgbm.json
   model_path: models/local/lightgbm_model.pkl
   feature_importance_path: reports/figures/lightgbm_feature_importance.png
+  model_comparison_path: reports/figures/model_comparison.png
 
   timestamp_column: timestamp_utc
   target_column: demand_mwh
@@ -122,14 +123,39 @@ train:
   validation_window_days: 7
   step_days: 7
 
-  model:
-    n_estimators: 250
-    learning_rate: 0.03
-    num_leaves: 31
-    max_depth: -1
-    subsample: 0.9
-    colsample_bytree: 0.9
-    random_state: 42
+  model_selection_metric: mae
+
+  models:
+    lightgbm:
+      enabled: true
+      n_estimators: 500
+      learning_rate: 0.03
+      num_leaves: 31
+      max_depth: -1
+      subsample: 0.9
+      colsample_bytree: 0.9
+      random_state: 42
+
+    mlp:
+      enabled: true
+      hidden_layer_sizes:
+        - 64
+        - 32
+      activation: relu
+      alpha: 0.0001
+      learning_rate_init: 0.001
+      max_iter: 300
+      early_stopping: true
+      random_state: 42
+
+    esn:
+      enabled: true
+      reservoir_size: 128
+      spectral_radius: 0.9
+      input_scale: 0.1
+      leaking_rate: 0.5
+      ridge_alpha: 1.0
+      random_state: 42
 
 
 predict:

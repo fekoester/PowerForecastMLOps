@@ -133,6 +133,7 @@ def build_monitoring_report(
         },
         "model": {
             "model_path": prediction_summary.get("model_path"),
+            "model_name": prediction_summary.get("model_name", "unknown"),
             "model_trained_at_utc": prediction_summary.get("model_trained_at_utc"),
             "feature_count": prediction_summary.get("feature_count"),
         },
@@ -253,6 +254,7 @@ Generated at: `{summary["created_at_utc"]}`
 
 | Item | Value |
 |---|---:|
+| Model name | `{model["model_name"]}` |
 | Model path | `{model["model_path"]}` |
 | Trained at | `{model["model_trained_at_utc"]}` |
 | Feature count | {model["feature_count"]} |
@@ -782,6 +784,7 @@ def _render_html_dashboard(summary: dict[str, Any], predictions: pd.DataFrame) -
     <h2>Model metadata</h2>
     <table>
       <tr><th>Item</th><th>Value</th></tr>
+      <tr><td>Model name</td><td><code>{html.escape(str(model["model_name"]))}</code></td></tr>
       <tr><td>Model path</td><td><code>{html.escape(str(model["model_path"]))}</code></td></tr>
       <tr><td>Trained at</td><td><code>{html.escape(str(model["model_trained_at_utc"]))}</code></td></tr>
       <tr><td>Latest MAE / training MAE</td><td>{_format_float(ratios["latest_mae_vs_training_mae"], 3)}</td></tr>
@@ -797,7 +800,11 @@ def _render_html_dashboard(summary: dict[str, Any], predictions: pd.DataFrame) -
         <div class="plot"><img src="figures/latest_predictions.png" alt="Latest predictions plot"></div>
       </div>
       <div>
-        <h3>Feature importance</h3>
+        <h3>Model comparison</h3>
+        <div class="plot"><img src="figures/model_comparison.png" alt="Model comparison plot"></div>
+      </div>
+      <div>
+        <h3>Feature importance / model explanation</h3>
         <div class="plot"><img src="figures/lightgbm_feature_importance.png" alt="Feature importance plot"></div>
       </div>
       <div>
