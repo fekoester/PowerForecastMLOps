@@ -8,6 +8,7 @@ from power_forecast.pipelines.backtest_pipeline import run_backtest_pipeline
 from power_forecast.pipelines.train_pipeline import run_train_pipeline
 from power_forecast.pipelines.predict_pipeline import run_predict_pipeline
 from power_forecast.pipelines.monitor_pipeline import run_monitor_pipeline
+from power_forecast.pipelines.forecast_pipeline import run_forecast_pipeline
 
 app = typer.Typer(help="PowerForecastMLOps CLI")
 console = Console()
@@ -54,6 +55,11 @@ def predict(config: str = "configs/data.yaml") -> None:
 def monitor(config: str = "configs/data.yaml") -> None:
     """Build monitoring reports for latest predictions."""
     run_monitor_pipeline(config)
+    
+@app.command()
+def forecast(config: str = "configs/data.yaml") -> None:
+    """Forecast the next 24 hours using forecast-safe features."""
+    run_forecast_pipeline(config)
 
 if __name__ == "__main__":
     app()

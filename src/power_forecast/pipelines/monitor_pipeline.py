@@ -26,6 +26,8 @@ def run_monitor_pipeline(config_path: str) -> None:
         markdown_report_path=monitor_cfg["markdown_report_path"],
         html_report_path=monitor_cfg["html_report_path"],
         thresholds=dict(monitor_cfg["degradation_thresholds"]),
+        future_forecast_summary_path=monitor_cfg.get("future_forecast_summary_path"),
+        future_forecast_path=monitor_cfg.get("future_forecast_path"),
     )
     
     local_figures_dir = Path("reports/monitoring/figures")

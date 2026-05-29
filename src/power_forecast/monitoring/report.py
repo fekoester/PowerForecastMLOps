@@ -81,6 +81,8 @@ def build_monitoring_report(
     markdown_report_path: str | Path,
     html_report_path: str | Path,
     thresholds: dict[str, float],
+    future_forecast_summary_path: str | Path | None = None,
+    future_forecast_path: str | Path | None = None,
 ) -> dict[str, Any]:
     prediction_summary = _load_json(prediction_summary_path)
     train_report = _load_json(train_report_path)
@@ -91,6 +93,14 @@ def build_monitoring_report(
         raise FileNotFoundError(f"Predictions file not found: {predictions_path}")
 
     predictions = pd.read_csv(predictions_path)
+    future_forecast_summary = None
+    future_forecast = None
+
+    if future_forecast_summary_path is not None and Path(future_forecast_summary_path).exists():
+        future_forecast_summary = _load_json(future_forecast_summary_path)
+
+    if future_forecast_path is not None and Path(future_forecast_path).exists():
+        future_forecast = pd.read_csv(future_forecast_path)
     latest_metrics = prediction_summary.get("metrics") or {}
     per_model_latest_metrics = prediction_summary.get("per_model_metrics") or {}
     latest_window_winner = None
@@ -168,6 +178,7 @@ def build_monitoring_report(
             "mae": best_baseline_mae,
             "rmse": best_baseline_rmse,
         },
+        "future_forecast": future_forecast_summary,
         "ratios": {
             "latest_mae_vs_training_mae": ratio_vs_training,
             "latest_mae_vs_best_baseline_mae": ratio_vs_baseline,
@@ -189,7 +200,7 @@ def build_monitoring_report(
     markdown_path.parent.mkdir(parents=True, exist_ok=True)
     markdown_path.write_text(markdown, encoding="utf-8")
 
-    html_report = _render_html_dashboard(summary, predictions)
+    html_report = _render_html_dashboard(summary, predictions, future_forecast)
     html_path = Path(html_report_path)
     html_path.parent.mkdir(parents=True, exist_ok=True)
     html_path.write_text(html_report, encoding="utf-8")
@@ -450,7 +461,11 @@ def _model_description(model_name: str) -> dict[str, str]:
     )
 
 
-def _render_html_dashboard(summary: dict[str, Any], predictions: pd.DataFrame) -> str:
+def _render_html_dashboard(
+    summary: dict[str, Any],
+    predictions: pd.DataFrame,
+    future_forecast: pd.DataFrame | None = None,
+) -> str:
     health = summary["health_status"]
     warnings = summary["warnings"]
 
@@ -1010,6 +1025,14 @@ def _render_html_dashboard(summary: dict[str, Any], predictions: pd.DataFrame) -
       <p class="note">The plot compares actual demand with each model's prediction over the latest 24 known hours.</p>
       <div class="plot"><img src="figures/latest_predictions.png" alt="Latest predictions by model"></div>
     </section>
+    
+    <section>
+      <h2>Next 24h forecast</h2>
+      <p class="note">
+        Forecast for the next 24 hours using weather forecast data, calendar features, and demand-history features available before the forecast horizon.
+      </p>
+      <div class="plot"><img src="figures/future_24h_forecast.png" alt="Next 24h forecast"></div>
+    </section>
 
     <section>
       <h2>Warnings</h2>
@@ -1064,6 +1087,13 @@ def _render_html_dashboard(summary: dict[str, Any], predictions: pd.DataFrame) -
   </div>
 
   <div id="predictions" class="tab-panel">
+    <section>
+      <h2>Next 24h future forecast</h2>
+      <p class="note">
+        This is a true future forecast. Actual demand is not known yet, so no error metrics are shown.
+      </p>
+      <div class="plot"><img src="figures/future_24h_forecast.png" alt="Next 24h future forecast"></div>
+    </section>
     <section>
       <h2>Latest prediction samples</h2>
       <div class="scroll-table">

@@ -1,4 +1,4 @@
-.PHONY: info ingest test lint format
+.PHONY: info ingest validate features backtest train predict forecast monitor test lint format run-all
 
 info:
 	power-forecast info
@@ -20,6 +20,9 @@ train:
 
 predict:
 	power-forecast predict --config configs/data.yaml
+	
+forecast:
+	power-forecast forecast --config configs/data.yaml
 
 monitor:
 	power-forecast monitor --config configs/data.yaml
@@ -31,6 +34,7 @@ run-all:
 	make backtest
 	make train
 	make predict
+	make forecast
 	make monitor
 
 test:

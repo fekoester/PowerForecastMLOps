@@ -191,6 +191,8 @@ monitor:
   train_report_path: reports/metrics/train_lightgbm.json
   baseline_report_path: reports/metrics/backtest_baselines.json
   predictions_path: data/predictions/latest_predictions.csv
+  future_forecast_summary_path: reports/metrics/future_forecast_summary.json
+  future_forecast_path: data/predictions/future_24h_forecast.csv
 
   summary_path: reports/metrics/monitoring_summary.json
   markdown_report_path: reports/monitoring/latest_report.md
@@ -201,3 +203,16 @@ monitor:
     degraded_mae_ratio_vs_training: 1.75
     watch_mae_ratio_vs_baseline: 0.90
     degraded_mae_ratio_vs_baseline: 1.00
+    
+    
+forecast:
+  model_path: models/local/lightgbm_model.pkl
+  output_path: data/predictions/future_24h_forecast.csv
+  features_output_path: data/processed/future_24h_features.csv
+  weather_forecast_output_path: data/raw/weather_forecast.csv
+  summary_path: reports/metrics/future_forecast_summary.json
+  figure_path: reports/figures/future_24h_forecast.png
+
+  timestamp_column: timestamp_utc
+  prediction_prefix: forecast_mwh
+  horizon_hours: 24
