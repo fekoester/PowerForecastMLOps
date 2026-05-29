@@ -1,6 +1,7 @@
 from sklearn.compose import TransformedTargetRegressor
 
 from power_forecast.models.model_zoo import enabled_models, make_model
+import lightgbm as lgb
 
 
 def test_enabled_models_filters_disabled_models():
@@ -48,7 +49,7 @@ def test_make_mlp_model_uses_target_scaling():
     assert isinstance(model, TransformedTargetRegressor)
 
 
-def test_make_lightgbm_model_uses_target_scaling():
+def test_make_lightgbm_model_is_native_lightgbm():
     model = make_model(
         "lightgbm",
         {
@@ -62,4 +63,4 @@ def test_make_lightgbm_model_uses_target_scaling():
         },
     )
 
-    assert isinstance(model, TransformedTargetRegressor)
+    assert isinstance(model, lgb.LGBMRegressor)

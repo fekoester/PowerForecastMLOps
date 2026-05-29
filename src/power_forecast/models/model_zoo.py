@@ -21,26 +21,17 @@ def _with_scaled_target(regressor):
 
 def make_model(model_name: str, config: dict[str, Any]):
     if model_name == "lightgbm":
-        base_model = Pipeline(
-            steps=[
-                ("x_scaler", StandardScaler()),
-                (
-                    "model",
-                    lgb.LGBMRegressor(
-                        objective="regression",
-                        n_estimators=int(config["n_estimators"]),
-                        learning_rate=float(config["learning_rate"]),
-                        num_leaves=int(config["num_leaves"]),
-                        max_depth=int(config["max_depth"]),
-                        subsample=float(config["subsample"]),
-                        colsample_bytree=float(config["colsample_bytree"]),
-                        random_state=int(config["random_state"]),
-                        verbosity=-1,
-                    ),
-                ),
-            ]
+        return lgb.LGBMRegressor(
+            objective="regression",
+            n_estimators=int(config["n_estimators"]),
+            learning_rate=float(config["learning_rate"]),
+            num_leaves=int(config["num_leaves"]),
+            max_depth=int(config["max_depth"]),
+            subsample=float(config["subsample"]),
+            colsample_bytree=float(config["colsample_bytree"]),
+            random_state=int(config["random_state"]),
+            verbosity=-1,
         )
-        return _with_scaled_target(base_model)
 
     if model_name == "mlp":
         hidden_layer_sizes = tuple(int(x) for x in config["hidden_layer_sizes"])
@@ -65,8 +56,8 @@ def make_model(model_name: str, config: dict[str, Any]):
         return _with_scaled_target(base_model)
 
     if model_name == "esn":
-        # EchoStateRegressor already standardizes X internally, but we still wrap y
-        # so all models use target scaling consistently.
+        # EchoStateRegressor already standardizes X internally.
+        # We still scale y so the Ridge readout learns a normalized target.
         base_model = EchoStateRegressor(
             reservoir_size=int(config["reservoir_size"]),
             spectral_radius=float(config["spectral_radius"]),

@@ -34,6 +34,7 @@ def run_train_pipeline(config_path: str) -> None:
         model_selection_metric=str(train_cfg["model_selection_metric"]),
         forecast_safe_features=bool(train_cfg.get("forecast_safe_features", False)),
         allowed_lag_hours=list(train_cfg.get("allowed_lag_hours", [24, 48, 168])),
+        recency_weighting_config=dict(train_cfg.get("recency_weighting", {"enabled": False})),
     )
 
     table = Table(title="Model Comparison Summary")

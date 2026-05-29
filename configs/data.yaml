@@ -5,7 +5,7 @@ eia:
   respondent: CISO
   type: D
   frequency: hourly
-  lookback_days: 90
+  lookback_days: 1095
   output_path: data/raw/eia_demand.csv
 
 weather:
@@ -13,7 +13,7 @@ weather:
   latitude: 34.0522
   longitude: -118.2437
   timezone: America/Los_Angeles
-  lookback_days: 90
+  lookback_days: 1095
   output_path: data/raw/weather.csv
 
 manifest:
@@ -92,6 +92,10 @@ features:
     - 7
     - 14
     - 30
+    - 60
+    - 90
+    - 180
+    - 365
 
   origin_rolling_windows_hours:
     - 24
@@ -106,9 +110,9 @@ backtest:
   timestamp_column: timestamp_utc
   target_column: demand_mwh
 
-  min_train_days: 30
-  validation_window_days: 7
-  step_days: 7
+  min_train_days: 365
+  validation_window_days: 30
+  step_days: 30
 
   baselines:
     lag_24h: demand_lag_24h
@@ -133,10 +137,17 @@ train:
     - 24
     - 48
     - 168
+    
+  recency_weighting:
+    enabled: true
+    half_life_days: 180
+    min_weight: 0.10
+    apply_to:
+      - lightgbm
 
-  min_train_days: 30
-  validation_window_days: 7
-  step_days: 7
+  min_train_days: 365
+  validation_window_days: 30
+  step_days: 30
 
   model_selection_metric: mae
 

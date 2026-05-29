@@ -54,8 +54,19 @@ def _prepare_weather(weather_path: str | Path, timezone_name: str) -> pd.DataFra
     # We localize them to the configured timezone, then convert to UTC
     # so they align with EIA timestamps.
     ts_local = pd.to_datetime(df["timestamp_local"])
-    ts_local = ts_local.dt.tz_localize(timezone_name, ambiguous="infer", nonexistent="shift_forward")
-    df["timestamp_utc"] = ts_local.dt.tz_convert("UTC")
+
+    # Multi-year local weather data crosses daylight-saving-time transitions.
+    # During the fall transition, local times such as 01:00 can be ambiguous.
+    # We mark ambiguous times as NaT and drop them rather than crashing.
+    # This loses only a tiny number of rows per year and avoids corrupt timezone alignment.
+    ts_localized = ts_local.dt.tz_localize(
+        timezone_name,
+        ambiguous="NaT",
+        nonexistent="shift_forward",
+    )
+
+    df["timestamp_utc"] = ts_localized.dt.tz_convert("UTC")
+    df = df.dropna(subset=["timestamp_utc"]).copy()
 
     numeric_cols = [
         "temperature_2m",

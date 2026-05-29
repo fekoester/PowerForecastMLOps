@@ -31,6 +31,9 @@ def run_ingestion(config_path: str) -> None:
         output_path=eia_cfg["output_path"],
     )
     console.print(f"[green]Saved EIA demand rows:[/green] {len(eia_df):,}")
+    console.print(
+    f"EIA time range: {eia_df['timestamp_utc'].min()} → {eia_df['timestamp_utc'].max()}"
+)
 
     console.print(
         f"Fetching weather: location={weather_cfg['location_name']} "

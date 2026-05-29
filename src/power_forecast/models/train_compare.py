@@ -26,6 +26,21 @@ def _load_best_baseline(backtest_path: str | Path) -> dict[str, Any]:
     report = json.loads(path.read_text(encoding="utf-8"))
     return report["aggregate_metrics"]["_best_by_mae"]
 
+def _make_recency_weights(
+    timestamps: pd.Series,
+    reference_time: pd.Timestamp,
+    half_life_days: float,
+    min_weight: float,
+) -> pd.Series:
+    """Exponential recency weights.
+
+    Most recent rows get weight close to 1.
+    Older rows decay exponentially with the configured half-life.
+    """
+    age_days = (reference_time - timestamps).dt.total_seconds() / 86400.0
+    weights = 0.5 ** (age_days / half_life_days)
+    weights = weights.clip(lower=min_weight, upper=1.0)
+    return weights
 
 def get_feature_columns(
     df: pd.DataFrame,
@@ -77,6 +92,7 @@ def _evaluate_model_on_folds(
     min_train_days: int,
     validation_window_days: int,
     step_days: int,
+    recency_weighting_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     folds = make_walk_forward_folds(
         timestamps=df[timestamp_column],
@@ -108,11 +124,27 @@ def _evaluate_model_on_folds(
 
         model = make_model(model_name, model_config)
 
+        sample_weight = None
+        if recency_weighting_config and bool(recency_weighting_config.get("enabled", False)):
+            apply_to = set(recency_weighting_config.get("apply_to", []))
+
+            if model_name in apply_to:
+                sample_weight = _make_recency_weights(
+                    timestamps=train_df[timestamp_column],
+                    reference_time=train_df[timestamp_column].max(),
+                    half_life_days=float(recency_weighting_config["half_life_days"]),
+                    min_weight=float(recency_weighting_config.get("min_weight", 0.0)),
+                )
+
         # MLP may warn about convergence. For this lightweight daily pipeline,
         # we record performance rather than failing the run.
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=ConvergenceWarning)
-            model.fit(X_train, y_train)
+
+            if sample_weight is not None:
+                model.fit(X_train, y_train, sample_weight=sample_weight)
+            else:
+                model.fit(X_train, y_train)
 
         pred = model.predict(X_valid)
 
@@ -170,6 +202,7 @@ def train_and_compare_models(
     model_selection_metric: str = "mae",
     forecast_safe_features: bool = False,
     allowed_lag_hours: list[int] | None = None,
+    recency_weighting_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if model_selection_metric != "mae":
         raise ValueError("Currently only model_selection_metric='mae' is supported.")
@@ -203,6 +236,7 @@ def train_and_compare_models(
             min_train_days=min_train_days,
             validation_window_days=validation_window_days,
             step_days=step_days,
+            recency_weighting_config=recency_weighting_config,
         )
         model_results[model_name] = result
 
@@ -234,9 +268,25 @@ def train_and_compare_models(
     for model_name, model_config in active_models.items():
         final_model = make_model(model_name, model_config)
 
+        sample_weight = None
+        if recency_weighting_config and bool(recency_weighting_config.get("enabled", False)):
+            apply_to = set(recency_weighting_config.get("apply_to", []))
+
+            if model_name in apply_to:
+                sample_weight = _make_recency_weights(
+                    timestamps=df[timestamp_column],
+                    reference_time=df[timestamp_column].max(),
+                    half_life_days=float(recency_weighting_config["half_life_days"]),
+                    min_weight=float(recency_weighting_config.get("min_weight", 0.0)),
+                )
+
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=ConvergenceWarning)
-            final_model.fit(df[feature_columns], df[target_column])
+
+            if sample_weight is not None:
+                final_model.fit(df[feature_columns], df[target_column], sample_weight=sample_weight)
+            else:
+                final_model.fit(df[feature_columns], df[target_column])
 
         final_models[model_name] = final_model
 
@@ -267,6 +317,7 @@ def train_and_compare_models(
         "backtest_aggregate": best_model_metrics,
         "all_backtest_results": model_results,
         "baseline_comparison": comparison,
+        "recency_weighting": recency_weighting_config or {"enabled": False},
     }
     joblib.dump(model_bundle, model_path)
 
@@ -304,6 +355,7 @@ def train_and_compare_models(
         },
         "aggregate_metrics": best_model_metrics,
         "baseline_comparison": comparison,
+        "recency_weighting": recency_weighting_config or {"enabled": False},
     }
 
     output_path = Path(output_path)

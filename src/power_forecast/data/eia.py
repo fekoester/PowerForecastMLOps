@@ -17,47 +17,51 @@ def fetch_eia_hourly_demand(
     lookback_days: int,
     output_path: str | Path,
 ) -> pd.DataFrame:
-    """Fetch hourly electricity demand from the EIA v2 API.
+    """Fetch hourly electricity demand from the EIA v2 API with pagination.
 
-    Parameters
-    ----------
-    respondent:
-        EIA balancing authority / region code, e.g. CISO.
-    demand_type:
-        Usually "D" for demand.
-    lookback_days:
-        Number of days back from now to request.
-    output_path:
-        CSV path where raw demand data is stored.
+    The EIA API returns at most `length` rows per request. For multi-year
+    hourly data, we need to request multiple pages with increasing offset.
     """
     api_key = require_env_var("EIA_API_KEY")
 
     end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
     start = end - timedelta(days=lookback_days)
 
-    params = {
-        "api_key": api_key,
-        "frequency": "hourly",
-        "data[0]": "value",
-        "facets[respondent][]": respondent,
-        "facets[type][]": demand_type,
-        "start": start.strftime("%Y-%m-%dT%H"),
-        "end": end.strftime("%Y-%m-%dT%H"),
-        "sort[0][column]": "period",
-        "sort[0][direction]": "asc",
-        "offset": 0,
-        "length": 5000,
-    }
+    page_size = 5000
+    offset = 0
+    all_rows: list[dict] = []
 
-    response = requests.get(EIA_REGION_DATA_URL, params=params, timeout=60)
-    response.raise_for_status()
-    payload = response.json()
+    while True:
+        params = {
+            "api_key": api_key,
+            "frequency": "hourly",
+            "data[0]": "value",
+            "facets[respondent][]": respondent,
+            "facets[type][]": demand_type,
+            "start": start.strftime("%Y-%m-%dT%H"),
+            "end": end.strftime("%Y-%m-%dT%H"),
+            "sort[0][column]": "period",
+            "sort[0][direction]": "asc",
+            "offset": offset,
+            "length": page_size,
+        }
 
-    rows = payload.get("response", {}).get("data", [])
-    if not rows:
-        raise RuntimeError(f"EIA returned no data. Payload keys: {payload.keys()}")
+        response = requests.get(EIA_REGION_DATA_URL, params=params, timeout=60)
+        response.raise_for_status()
+        payload = response.json()
 
-    df = pd.DataFrame(rows)
+        rows = payload.get("response", {}).get("data", [])
+        if not rows and offset == 0:
+            raise RuntimeError(f"EIA returned no data. Payload keys: {payload.keys()}")
+
+        all_rows.extend(rows)
+
+        if len(rows) < page_size:
+            break
+
+        offset += page_size
+
+    df = pd.DataFrame(all_rows)
 
     # Normalize expected fields.
     # EIA usually returns: period, respondent, respondent-name, type, type-name, value, value-units
@@ -77,7 +81,14 @@ def fetch_eia_hourly_demand(
 
     df["timestamp_utc"] = pd.to_datetime(df["timestamp_utc"], utc=True)
     df["demand_mwh"] = pd.to_numeric(df["demand_mwh"], errors="coerce")
-    df = df.sort_values("timestamp_utc").reset_index(drop=True)
+
+    df = df.sort_values("timestamp_utc").drop_duplicates("timestamp_utc").reset_index(drop=True)
+
+    # Extra safety: keep only the requested interval.
+    df = df[
+        (df["timestamp_utc"] >= pd.Timestamp(start))
+        & (df["timestamp_utc"] <= pd.Timestamp(end))
+    ].reset_index(drop=True)
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
