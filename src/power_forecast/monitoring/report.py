@@ -105,11 +105,15 @@ def _health_status(
 def _split_candidate_name(model_name: str) -> tuple[str, str]:
     """Split candidate name like 'lightgbm_180d' into ('lightgbm', '180d').
 
-    Falls back to (model_name, "") for names without a training-window suffix.
+    Ensemble names such as 'ensemble_linear' are not training-window candidates.
     """
+    if model_name == "ensemble_linear":
+        return "ensemble_linear", ""
+
     if model_name.endswith("d") and "_" in model_name:
         base, window = model_name.rsplit("_", maxsplit=1)
         return base, window
+
     return model_name, ""
 
 
@@ -232,6 +236,7 @@ def build_monitoring_report(
             "mape": training_mape,
         },
         "per_model_training_metrics": per_model_training_metrics,
+        "ensemble_coefficients": train_report.get("ensemble_coefficients", {}),
         "best_baseline": {
             "name": best_baseline_name,
             "mae": best_baseline_mae,
@@ -553,6 +558,23 @@ def _model_description(model_name: str) -> dict[str, str]:
                 "Performance can depend on reservoir hyperparameters and random seed; feature importances are less direct."
             ),
         },
+        "ensemble_linear": {
+            "title": "Linear Ensemble",
+            "style": "Stacked linear combination of model predictions",
+            "description": (
+                "The linear ensemble takes the predictions of all trained base candidates and learns "
+                "a regularized linear combination. It can combine short-window models that adapt to the "
+                "current regime with longer-window models that capture broader seasonal structure."
+            ),
+            "strengths": (
+                "Combines complementary models, can reduce individual model bias, and provides inspectable "
+                "coefficients showing which model outputs matter most."
+            ),
+            "caveats": (
+                "Can overfit if the base-model predictions are too similar or if the stacking target is too small. "
+                "It should be judged by walk-forward validation and latest-window monitoring, not by one window alone."
+            ),
+        },
     }
 
     desc = descriptions.get(
@@ -638,6 +660,7 @@ def _render_html_dashboard(
 
     per_model_latest = summary.get("per_model_latest_metrics", {})
     per_model_training = summary.get("per_model_training_metrics", {})
+    ensemble_coefficients = summary.get("ensemble_coefficients", {})
 
     all_model_names = sorted(
         set(per_model_training.keys()) | set(per_model_latest.keys()),
@@ -684,6 +707,45 @@ def _render_html_dashboard(
             </tr>
             """
         )
+
+
+    ensemble_coeff_rows = []
+    for name, value in sorted(
+        ensemble_coefficients.items(),
+        key=lambda item: abs(float(item[1])),
+        reverse=True,
+    ):
+        ensemble_coeff_rows.append(
+            f"""
+            <tr>
+              <td>{html.escape(str(name))}</td>
+              <td>{_format_float(float(value), 4)}</td>
+              <td>{_format_float(abs(float(value)), 4)}</td>
+            </tr>
+            """
+        )
+
+    ensemble_coeff_table = ""
+    if ensemble_coeff_rows:
+        ensemble_coeff_table = f"""
+        <section>
+          <h2>Linear ensemble coefficients</h2>
+          <p class="note">
+            Coefficients show how the linear ensemble combines base-model predictions.
+            Larger absolute values indicate stronger influence.
+          </p>
+          <div class="scroll-table">
+            <table class="sortable-table">
+              <tr>
+                <th onclick="sortTable(this, 0, 'text')">Base model</th>
+                <th onclick="sortTable(this, 1, 'number')">Coefficient</th>
+                <th onclick="sortTable(this, 2, 'number')">Absolute coefficient</th>
+              </tr>
+              {''.join(ensemble_coeff_rows)}
+            </table>
+          </div>
+        </section>
+        """
 
     model_detail_cards = []
     for model_name in all_model_names:
@@ -1198,6 +1260,8 @@ def _render_html_dashboard(
         </table>
       </div>
     </section>
+
+    {ensemble_coeff_table}
 
     <section>
       <h2>Latest 24h prediction</h2>

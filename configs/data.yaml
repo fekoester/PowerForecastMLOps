@@ -191,6 +191,12 @@ train:
       leaking_rate: 0.5
       ridge_alpha: 1.0
       random_state: 42
+      
+  ensemble:
+    enabled: true
+    name: ensemble_linear
+    alpha: 1.0
+    positive: false
 
 
 predict:

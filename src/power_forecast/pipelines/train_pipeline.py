@@ -21,6 +21,11 @@ def run_train_pipeline(
     backtest_cfg = config["backtest"]
 
     console.print("[bold]Starting model comparison training pipeline[/bold]")
+    
+    if selected_models:
+        console.print(f"[cyan]Training selected model families:[/cyan] {', '.join(selected_models)}")
+    if selected_windows:
+        console.print(f"[cyan]Training selected windows:[/cyan] {', '.join(str(w) for w in selected_windows)}")
 
     report = train_and_compare_models(
         features_path=features_cfg["output_path"],
@@ -42,13 +47,9 @@ def run_train_pipeline(
         training_windows_days=list(train_cfg.get("training_windows_days", [1095])),
         selected_models=selected_models,
         selected_windows=selected_windows,
+        ensemble_config=dict(train_cfg.get("ensemble", {"enabled": False})),
     )
     
-    if selected_models:
-        console.print(f"[cyan]Training selected model families:[/cyan] {', '.join(selected_models)}")
-    if selected_windows:
-        console.print(f"[cyan]Training selected windows:[/cyan] {', '.join(str(w) for w in selected_windows)}")
-
     table = Table(title="Model Comparison Summary")
     table.add_column("Model")
     table.add_column("MAE", justify="right")
@@ -81,6 +82,21 @@ def run_train_pipeline(
     )
 
     console.print(table)
+    
+    ensemble_coefficients = report.get("ensemble_coefficients", {})
+    if ensemble_coefficients:
+        coeff_table = Table(title="Linear Ensemble Coefficients")
+        coeff_table.add_column("Base model")
+        coeff_table.add_column("Coefficient", justify="right")
+
+        for name, value in sorted(
+            ensemble_coefficients.items(),
+            key=lambda item: abs(item[1]),
+            reverse=True,
+        ):
+            coeff_table.add_row(name, f"{value:.4f}")
+
+        console.print(coeff_table)
 
     console.print(
         f"[green]Best model:[/green] {comparison['best_model_name']} "
