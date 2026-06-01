@@ -45,7 +45,7 @@ jobs:
 
       - name: Run full forecasting pipeline
         run: |
-          make run-all
+          make run-ci
 
       - name: Upload reports
         if: always()

@@ -1,0 +1,238 @@
+\project:
+  name: PowerForecastMLOps
+
+eia:
+  respondent: CISO
+  type: D
+  frequency: hourly
+  lookback_days: 180
+  output_path: data/raw/eia_demand.csv
+
+weather:
+  location_name: Los Angeles
+  latitude: 34.0522
+  longitude: -118.2437
+  timezone: America/Los_Angeles
+  lookback_days: 180
+  output_path: data/raw/weather.csv
+
+manifest:
+  output_path: data/raw/manifest.json
+
+
+validation:
+  output_path: reports/metrics/data_validation.json
+
+  eia:
+    required_columns:
+      - timestamp_utc
+      - demand_mwh
+      - region
+      - demand_type
+    timestamp_column: timestamp_utc
+    numeric_columns:
+      - demand_mwh
+    min_rows: 1000
+    max_missing_rate: 0.05
+    value_ranges:
+      demand_mwh:
+        min: 0
+        max: 100000
+
+  weather:
+    required_columns:
+      - timestamp_local
+      - temperature_2m
+      - relative_humidity_2m
+      - wind_speed_10m
+      - shortwave_radiation
+    timestamp_column: timestamp_local
+    numeric_columns:
+      - temperature_2m
+      - relative_humidity_2m
+      - wind_speed_10m
+      - shortwave_radiation
+    min_rows: 1000
+    max_missing_rate: 0.10
+    value_ranges:
+      temperature_2m:
+        min: -40
+        max: 60
+      relative_humidity_2m:
+        min: 0
+        max: 100
+      wind_speed_10m:
+        min: 0
+        max: 80
+      shortwave_radiation:
+        min: 0
+        max: 1400
+
+features:
+  output_path: data/processed/features.csv
+  summary_path: reports/metrics/feature_summary.json
+
+  target_column: demand_mwh
+  timestamp_column: timestamp_utc
+
+  lags_hours:
+    - 1
+    - 2
+    - 3
+    - 24
+    - 48
+    - 168
+
+  rolling_windows_hours:
+    - 3
+    - 24
+    - 168
+
+  same_hour_windows_days:
+    - 7
+    - 14
+    - 30
+    - 60
+
+  origin_rolling_windows_hours:
+    - 24
+
+  base_temperature_c: 18.0
+  
+  use_cyclic_calendar_features: true
+
+
+backtest:
+  output_path: reports/metrics/backtest_baselines.json
+  figure_path: reports/figures/backtest_baselines.png
+
+  timestamp_column: timestamp_utc
+  target_column: demand_mwh
+
+  min_train_days: 90
+  validation_window_days: 14
+  step_days: 14
+
+  baselines:
+    lag_24h: demand_lag_24h
+    lag_48h: demand_lag_48h
+    lag_168h: demand_lag_168h
+    same_hour_mean_7d: demand_same_hour_mean_7d
+    same_hour_mean_14d: demand_same_hour_mean_14d
+    same_hour_mean_30d: demand_same_hour_mean_30d
+
+
+train:
+  output_path: reports/metrics/train_lightgbm.json
+  model_path: models/local/lightgbm_model.pkl
+  feature_importance_path: reports/figures/lightgbm_feature_importance.png
+  model_comparison_path: reports/figures/model_comparison.png
+
+  timestamp_column: timestamp_utc
+  target_column: demand_mwh
+
+  forecast_safe_features: true
+  allowed_lag_hours:
+    - 24
+    - 48
+    - 168
+    
+  training_windows_days:
+    - 30
+    - 90
+    
+  recency_weighting:
+    enabled: true
+    half_life_days: 180
+    min_weight: 0.10
+    apply_to:
+      - lightgbm
+
+  min_train_days: 90
+  validation_window_days: 14
+  step_days: 14
+
+  model_selection_metric: mae
+
+  models:
+    lightgbm:
+      enabled: true
+      n_estimators: 500
+      learning_rate: 0.03
+      num_leaves: 31
+      max_depth: -1
+      subsample: 0.9
+      colsample_bytree: 0.9
+      random_state: 42
+
+    mlp:
+      enabled: true
+      hidden_layer_sizes:
+        - 128
+        - 64
+      activation: relu
+      alpha: 0.0001
+      learning_rate_init: 0.003
+      max_iter: 300
+      early_stopping: true
+      random_state: 42
+
+    esn:
+      enabled: true
+      reservoir_size: 128
+      spectral_radius: 0.9
+      input_scale: 0.1
+      leaking_rate: 0.5
+      ridge_alpha: 1.0
+      random_state: 42
+      
+  ensemble:
+    enabled: false
+    name: ensemble_linear
+    alpha: 1.0
+    positive: false
+
+
+predict:
+  model_path: models/local/lightgbm_model.pkl
+  input_path: data/processed/features.csv
+  output_path: data/predictions/latest_predictions.csv
+  summary_path: reports/metrics/prediction_summary.json
+  figure_path: reports/figures/latest_predictions.png
+
+  timestamp_column: timestamp_utc
+  target_column: demand_mwh
+  prediction_column: prediction_mwh
+  n_latest_rows: 24
+
+
+monitor:
+  prediction_summary_path: reports/metrics/prediction_summary.json
+  train_report_path: reports/metrics/train_lightgbm.json
+  baseline_report_path: reports/metrics/backtest_baselines.json
+  predictions_path: data/predictions/latest_predictions.csv
+  future_forecast_summary_path: reports/metrics/future_forecast_summary.json
+  future_forecast_path: data/predictions/future_24h_forecast.csv
+
+  summary_path: reports/metrics/monitoring_summary.json
+  markdown_report_path: reports/monitoring/latest_report.md
+  html_report_path: reports/monitoring/latest_report.html
+
+  degradation_thresholds:
+    watch_mae_ratio_vs_training: 1.25
+    degraded_mae_ratio_vs_training: 1.75
+    watch_mae_ratio_vs_baseline: 0.90
+    degraded_mae_ratio_vs_baseline: 1.00
+    
+    
+forecast:
+  model_path: models/local/lightgbm_model.pkl
+  output_path: data/predictions/future_24h_forecast.csv
+  features_output_path: data/processed/future_24h_features.csv
+  weather_forecast_output_path: data/raw/weather_forecast.csv
+  summary_path: reports/metrics/future_forecast_summary.json
+  figure_path: reports/figures/future_24h_forecast.png
+
+  timestamp_column: timestamp_utc
+  prediction_prefix: forecast_mwh
+  horizon_hours: 24
