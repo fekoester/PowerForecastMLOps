@@ -48,33 +48,43 @@ The pipeline includes:
 
 ## Current result
 
-The current setup uses roughly three years of hourly California ISO demand data and Los Angeles weather data.
+The live dashboard is produced by the daily CI run, which uses `configs/data_ci.yaml`: the last 180 days of hourly
+CAISO demand, 30- and 90-day training windows, and 14-day walk-forward folds. The full 3-year setup is in
+`configs/data.yaml`.
 
-A typical recent result:
+Walk-forward results from the CI configuration (run of 2026-11-11):
 
-| Model / baseline                      | Walk-forward MAE | Walk-forward RMSE | Walk-forward MAPE |
-| ------------------------------------- | ---------------: | ----------------: | ----------------: |
-| Best fair baseline: lag_24h           |           ~1,284 |            ~1,792 |             ~4.9% |
-| Best production model: LightGBM 1095d |             ~866 |            ~1,194 |             ~3.3% |
+| Model / baseline | Walk-forward MAE | Walk-forward MAPE |
+| --- | ---: | ---: |
+| Best fair baseline: `lag_24h` | 1,705 | — |
+| `lightgbm_90d` (production), v0.1 | 1,557 | 5.0% |
+| **`lightgbm_90d` (production), v0.2** | **1,282** | **4.1%** |
+
+v0.2 is **18% more accurate** than v0.1, and its margin over the best baseline grows from 9% to 25%. An ablation on the
+same data shows the gain comes from the population-weighted multi-city weather:
+
+| `lightgbm_90d` walk-forward MAE | no holiday features | with holiday features |
+| --- | ---: | ---: |
+| Los Angeles weather only | 1,592 | 1,610 |
+| 6-city weighted weather | **1,254** | 1,277 |
+
+Holiday features show no gain on 180 days of data, which contain only a couple of holidays. So they are off in the CI
+config and on in the 3-year config.
 
 The exact numbers change as the live API data updates.
 
-The monitoring report also evaluates the latest known 24h window separately. This is intentionally shown separately from walk-forward model selection, because current-regime performance and historical-average performance can disagree.
+### Latest 24h check (out-of-sample)
 
-Example latest-24h ranking from one run:
+The monitoring report also scores the latest known 24 hours. The final models are trained **without** this window
+(`train.monitoring_holdout_hours`), so it is a genuine day-ahead test. Before v0.2 the window was part of the
+training data, which made short-window models look almost perfect on the latest day: `lightgbm_30d` showed an MAE of
+about 40 despite a walk-forward MAE of about 1,900.
 
-| Model          | Latest 24h MAE | Latest 24h MAPE | Role              |
-| -------------- | -------------: | --------------: | ----------------- |
-| lightgbm_30d   |            ~52 |          ~0.21% | latest 24h winner |
-| lightgbm_90d   |           ~110 |          ~0.45% |                   |
-| lightgbm_180d  |           ~158 |          ~0.64% |                   |
-| lightgbm_1095d |           ~235 |          ~0.94% | production model  |
+Each run's `latest_report` therefore shows:
 
-This exposes an important forecasting tradeoff:
-
-* long training windows are usually more robust on average
-* short training windows may adapt better to the current regime
-* operational monitoring should show both
+* walk-forward MAE: the robust, long-run estimate used for model selection
+* latest-24h MAE: the current-regime check, which is noisier because it covers a single day
+* prediction-interval coverage: how many of the latest actuals fall inside the 80 % / 95 % bands
 
 ## Data sources
 
@@ -87,9 +97,11 @@ The project uses:
 The current configuration uses:
 
 * California ISO demand data
-* Los Angeles weather as a simple weather proxy
+* population-weighted weather from six California locations: Los Angeles, Inland Empire, San Jose, San Diego,
+  Sacramento and Fresno (`weather.locations`). The per-location temperatures and weighted degree-hours are also
+  model features.
 
-This is intentionally simple and reproducible. A more production-grade regional model would use multiple weather locations and more detailed grid/market features.
+Remove `weather.locations` to fall back to a single location.
 
 ## Forecasting task
 
@@ -211,6 +223,19 @@ esn_90d
 
 This allows the pipeline to explicitly compare current-regime models against longer-history models.
 
+## Prediction intervals
+
+Every forecast comes with 80 % and 95 % intervals for the production model. They are **split-conformal intervals**:
+the empirical quantiles of the out-of-sample walk-forward errors, computed separately for each local hour of day,
+because errors at the evening peak are larger than at night. They are shaded in the prediction plots, written to the
+CSVs (`*_lower_80`, `*_upper_95`, ...) and checked on the latest window (`coverage_80`, `coverage_95`).
+
+## Calendar and holiday features
+
+Calendar features include the hour, day of week and month, with optional cyclic encodings. With
+`features.use_holiday_features`, they also include US federal holidays (`is_holiday`), the days before and after them,
+and `is_workday`. No extra dependency is needed.
+
 ## Production model vs latest-window winner
 
 The dashboard distinguishes between:
@@ -291,10 +316,12 @@ Run the full local pipeline:
 make run-all
 ```
 
-Run tests:
+Install for development and run lint and tests:
 
 ```bash
-make test
+pip install -e ".[dev]"
+make lint
+make test   # includes an offline end-to-end pipeline run on synthetic data
 ```
 
 Run individual steps:
@@ -427,6 +454,10 @@ A model is only useful if it beats the relevant operational baseline.
 
 ### Model comparison
 
+The ensemble is linear stacking. Its meta-model is fit on the last `train.ensemble.holdout_days`, using base models
+trained without those days, so it never learns from in-sample predictions. The Echo State Network is stateful, so
+before predicting a window it is warmed up on the preceding two weeks of feature rows.
+
 The training step compares:
 
 * LightGBM
@@ -513,10 +544,14 @@ GitHub Actions runs the pipeline on:
 The workflow:
 
 1. installs the project in a clean Linux environment
-2. runs the test suite
-3. executes the full forecasting pipeline
-4. uploads reports and predictions as artifacts
+2. runs lint and the test suite (including an offline end-to-end pipeline test)
+3. executes the full forecasting pipeline on live data
+4. uploads reports, predictions and a raw-data snapshot as artifacts
 5. deploys the latest dashboard to GitHub Pages
+6. re-enables its own schedule (keepalive)
+
+GitHub disables scheduled workflows after 60 days without repository activity. This froze the dashboard from August to
+November 2026. The keepalive step re-enables the workflow on every scheduled run, so this cannot happen again.
 
 ## GitHub secrets
 
@@ -571,6 +606,16 @@ train:
     min_weight: 0.10
     apply_to:
       - lightgbm
+
+  prediction_intervals:
+    enabled: true
+    levels: [0.8, 0.95]
+    by_hour: true
+
+  monitoring_holdout_hours: 24   # default: predict.n_latest_rows
+
+  ensemble:
+    holdout_days: 30
 ```
 
 ## Current limitations
@@ -578,9 +623,7 @@ train:
 This project is intentionally compact and runs on GitHub Actions. Current limitations include:
 
 * single demand region
-* single weather proxy location
-* no holiday/calendar-event feature yet
-* no probabilistic prediction intervals yet
+* weather locations are fixed points with population weights, not a load-weighted grid
 * no formal model registry
 * no automatic model promotion rule beyond current selection logic
 * no MLflow or experiment database
@@ -592,10 +635,6 @@ This project is intentionally compact and runs on GitHub Actions. Current limita
 Potential next improvements:
 
 * adaptive production selection rule using both walk-forward and latest-window metrics
-* ensemble of strong recent-window and long-window models
-* prediction intervals / quantile regression
-* multiple weather locations
-* holiday and special-day features
 * weather forecast error monitoring
 * drift metrics for feature distributions
 * explicit model registry and promotion rules

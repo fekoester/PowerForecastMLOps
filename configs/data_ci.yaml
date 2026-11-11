@@ -109,8 +109,9 @@ features:
 
   base_temperature_c: 18.0
 
-  # US federal holidays plus the days before/after them (no extra dependency).
-  use_holiday_features: true
+  # US federal holidays plus the days before/after them (no extra dependency). Disabled here:
+  # 180 days contain too few holidays to learn from (measured: no gain); on in data.yaml.
+  use_holiday_features: false
   
   use_cyclic_calendar_features: true
 

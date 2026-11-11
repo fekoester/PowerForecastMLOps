@@ -44,6 +44,7 @@ def workspace(tmp_path, monkeypatch):
     config["backtest"]["min_train_days"] = 60
     config["train"]["models"]["mlp"]["max_iter"] = 20
     config["train"]["ensemble"]["enabled"] = True
+    config["features"]["use_holiday_features"] = True
     config["train"]["ensemble"]["holdout_days"] = 14
     config["validation"]["eia"]["min_rows"] = 100
     config["validation"]["weather"]["min_rows"] = 100
