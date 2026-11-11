@@ -50,7 +50,7 @@ run-ci:
 	$(MAKE) monitor CONFIG=configs/data_ci.yaml
 
 test:
-	pytest -q
+	python -m pytest -q
 
 lint:
 	ruff check src tests

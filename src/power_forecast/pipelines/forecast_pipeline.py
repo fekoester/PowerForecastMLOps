@@ -3,6 +3,7 @@ from __future__ import annotations
 from rich.console import Console
 from rich.table import Table
 
+from power_forecast.data.locations import location_weights, weather_locations
 from power_forecast.models.forecast import run_future_24h_forecast
 from power_forecast.utils.config import load_yaml
 
@@ -21,8 +22,7 @@ def run_forecast_pipeline(config_path: str) -> None:
     summary = run_future_24h_forecast(
         model_path=forecast_cfg["model_path"],
         eia_path=config["eia"]["output_path"],
-        latitude=float(config["weather"]["latitude"]),
-        longitude=float(config["weather"]["longitude"]),
+        locations=weather_locations(config["weather"]),
         timezone_name=config["weather"]["timezone"],
         base_temperature_c=float(feature_cfg["base_temperature_c"]),
         allowed_lag_hours=list(train_cfg.get("allowed_lag_hours", [24, 48, 168])),
@@ -38,6 +38,9 @@ def run_forecast_pipeline(config_path: str) -> None:
         use_cyclic_calendar_features=bool(
             feature_cfg.get("use_cyclic_calendar_features", False)
         ),
+        use_holiday_features=bool(feature_cfg.get("use_holiday_features", False)),
+        location_weights=location_weights(config["weather"]),
+        history_features_path=feature_cfg["output_path"],
     )
 
     table = Table(title="Future 24h Forecast Summary")

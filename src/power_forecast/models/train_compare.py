@@ -2,20 +2,23 @@ from __future__ import annotations
 
 import json
 import warnings
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import joblib
 import matplotlib.pyplot as plt
-import pandas as pd
 import numpy as np
+import pandas as pd
 from sklearn.exceptions import ConvergenceWarning
 
 from power_forecast.models.backtest import make_walk_forward_folds
+from power_forecast.models.ensemble import LinearEnsembleRegressor
+from power_forecast.models.inference import interval_table, predict_with_history
 from power_forecast.models.metrics import bias, mae, mape, rmse
 from power_forecast.models.model_zoo import enabled_models, make_model
-from power_forecast.models.ensemble import LinearEnsembleRegressor
+
+DEFAULT_ENSEMBLE_HOLDOUT_DAYS = 30
 
 
 def _load_best_baseline(backtest_path: str | Path) -> dict[str, Any]:
@@ -136,6 +139,7 @@ def _evaluate_model_on_folds(
         raise RuntimeError("No folds available. Run with more data or shorter windows.")
 
     fold_results: list[dict[str, Any]] = []
+    residuals: dict[str, list] = {"residual": [], "hour": []}
 
     for fold in folds:
         train_mask = (df[timestamp_column] >= fold.train_start) & (
@@ -153,36 +157,22 @@ def _evaluate_model_on_folds(
         )
         valid_df = df.loc[valid_mask].copy()
 
-        X_train = train_df[feature_columns]
-        y_train = train_df[target_column]
-        X_valid = valid_df[feature_columns]
+        model = _fit_candidate_model(
+            df=train_df_full,
+            model_name=model_name,
+            model_config=model_config,
+            feature_columns=feature_columns,
+            timestamp_column=timestamp_column,
+            target_column=target_column,
+            training_window_days=training_window_days,
+            recency_weighting_config=recency_weighting_config,
+        )
         y_valid = valid_df[target_column]
-
-        model = make_model(model_name, model_config)
-
-        sample_weight = None
-        if recency_weighting_config and bool(recency_weighting_config.get("enabled", False)):
-            apply_to = set(recency_weighting_config.get("apply_to", []))
-
-            if model_name in apply_to:
-                sample_weight = _make_recency_weights(
-                    timestamps=train_df[timestamp_column],
-                    reference_time=train_df[timestamp_column].max(),
-                    half_life_days=float(recency_weighting_config["half_life_days"]),
-                    min_weight=float(recency_weighting_config.get("min_weight", 0.0)),
-                )
-
-        # MLP may warn about convergence. For this lightweight daily pipeline,
-        # we record performance rather than failing the run.
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=ConvergenceWarning)
-
-            if sample_weight is not None:
-                model.fit(X_train, y_train, sample_weight=sample_weight)
-            else:
-                model.fit(X_train, y_train)
-
-        pred = model.predict(X_valid)
+        # Stateful models (ESN) are warmed up on the end of the training fold.
+        pred = predict_with_history(
+            model, valid_df[feature_columns], X_history=train_df_full[feature_columns]
+        )
+        _collect_residuals(residuals, valid_df, y_valid, pred)
 
         fold_results.append(
             {
@@ -221,7 +211,17 @@ def _evaluate_model_on_folds(
         "candidate_name": _candidate_name(model_name, training_window_days),
         "aggregate_metrics": aggregate,
         "fold_results": fold_results,
+        # Out-of-sample residuals for prediction intervals (removed before writing JSON).
+        "_residuals": residuals,
     }
+
+
+def _collect_residuals(
+    residuals: dict[str, list], valid_df: pd.DataFrame, y_true, y_pred
+) -> None:
+    residuals["residual"].extend((np.asarray(y_true, float) - np.asarray(y_pred, float)).tolist())
+    hours = valid_df["hour"] if "hour" in valid_df.columns else pd.Series([-1] * len(valid_df))
+    residuals["hour"].extend(hours.astype(int).tolist())
 
 
 
@@ -311,6 +311,7 @@ def _evaluate_linear_ensemble_on_folds(
     ensemble_config: dict[str, Any],
 ) -> dict[str, Any]:
     fold_results: list[dict[str, Any]] = []
+    residuals: dict[str, list] = {"residual": [], "hour": []}
 
     ensemble_name = str(ensemble_config.get("name", "ensemble_linear"))
     alpha = float(ensemble_config.get("alpha", 1.0))
@@ -337,34 +338,22 @@ def _evaluate_linear_ensemble_on_folds(
         train_df_full = df.loc[train_mask].copy()
         valid_df = df.loc[valid_mask].copy()
 
-        base_models = {}
-
-        for base_model_name, model_config in active_models.items():
-            for training_window_days in training_windows_days:
-                candidate = _candidate_name(base_model_name, int(training_window_days))
-
-                base_models[candidate] = _fit_candidate_model(
-                    df=train_df_full,
-                    model_name=base_model_name,
-                    model_config=model_config,
-                    feature_columns=feature_columns,
-                    timestamp_column=timestamp_column,
-                    target_column=target_column,
-                    training_window_days=int(training_window_days),
-                    recency_weighting_config=recency_weighting_config,
-                )
-
-        ensemble = LinearEnsembleRegressor(
-            base_models=base_models,
+        ensemble = _fit_stacked_ensemble(
+            df=train_df_full,
+            active_models=active_models,
+            training_windows_days=training_windows_days,
             feature_columns=feature_columns,
-            alpha=alpha,
-            positive=positive,
+            timestamp_column=timestamp_column,
+            target_column=target_column,
+            recency_weighting_config=recency_weighting_config,
+            ensemble_config=ensemble_config,
         )
 
-        ensemble.fit(train_df_full[feature_columns], train_df_full[target_column])
-
         y_true = valid_df[target_column]
-        y_pred = ensemble.predict(valid_df[feature_columns])
+        y_pred = ensemble.predict(
+            valid_df[feature_columns], X_history=train_df_full[feature_columns]
+        )
+        _collect_residuals(residuals, valid_df, y_true, y_pred)
 
         fold_results.append(
             {
@@ -407,11 +396,78 @@ def _evaluate_linear_ensemble_on_folds(
         "fold_results": fold_results,
         "ensemble": {
             "type": "linear_stacking",
+            "meta_fit": "time-based holdout (out-of-sample base predictions)",
+            "holdout_days": int(ensemble_config.get("holdout_days", DEFAULT_ENSEMBLE_HOLDOUT_DAYS)),
             "alpha": alpha,
             "positive": positive,
             "mean_coefficients": mean_coefficients,
         },
+        "_residuals": residuals,
     }
+
+
+def _fit_stacked_ensemble(
+    df: pd.DataFrame,
+    active_models: dict[str, dict[str, Any]],
+    training_windows_days: list[int],
+    feature_columns: list[str],
+    timestamp_column: str,
+    target_column: str,
+    recency_weighting_config: dict[str, Any] | None,
+    ensemble_config: dict[str, Any],
+    final_base_models: dict[str, Any] | None = None,
+) -> LinearEnsembleRegressor:
+    """Stacking without in-sample leakage.
+
+    1. Fit every base candidate on data before the last ``holdout_days``.
+    2. Fit the meta-model on their predictions for the held-out days (out-of-sample).
+    3. Use base candidates fitted on all of ``df`` (``final_base_models`` if already trained)
+       together with that meta-model.
+    """
+    holdout_days = int(ensemble_config.get("holdout_days", DEFAULT_ENSEMBLE_HOLDOUT_DAYS))
+    cutoff = df[timestamp_column].max() - pd.Timedelta(days=holdout_days)
+    early = df[df[timestamp_column] <= cutoff]
+    holdout = df[df[timestamp_column] > cutoff]
+    if early.empty or holdout.empty:
+        raise RuntimeError(
+            f"Not enough data for an ensemble holdout of {holdout_days} days; "
+            "reduce train.ensemble.holdout_days."
+        )
+
+    def fit_all(train: pd.DataFrame) -> dict[str, Any]:
+        return {
+            _candidate_name(name, int(window)): _fit_candidate_model(
+                df=train,
+                model_name=name,
+                model_config=config,
+                feature_columns=feature_columns,
+                timestamp_column=timestamp_column,
+                target_column=target_column,
+                training_window_days=int(window),
+                recency_weighting_config=recency_weighting_config,
+            )
+            for name, config in active_models.items()
+            for window in training_windows_days
+        }
+
+    early_models = fit_all(early)
+    meta_X = pd.DataFrame(
+        {
+            name: predict_with_history(
+                model, holdout[feature_columns], X_history=early[feature_columns]
+            )
+            for name, model in early_models.items()
+        },
+        index=holdout.index,
+    )
+    ensemble = LinearEnsembleRegressor(
+        base_models=final_base_models if final_base_models is not None else fit_all(df),
+        feature_columns=feature_columns,
+        alpha=float(ensemble_config.get("alpha", 1.0)),
+        positive=bool(ensemble_config.get("positive", False)),
+    )
+    ensemble.fit_from_predictions(meta_X, holdout[target_column])
+    return ensemble
 
 def _is_ensemble_name(model_name: str) -> bool:
     return model_name == "ensemble_linear" or model_name.startswith("ensemble_")
@@ -437,7 +493,15 @@ def train_and_compare_models(
     selected_models: list[str] | None = None,
     selected_windows: list[int] | None = None,
     ensemble_config: dict[str, Any] | None = None,
+    prediction_intervals_config: dict[str, Any] | None = None,
+    monitoring_holdout_hours: int = 0,
 ) -> dict[str, Any]:
+    """Walk-forward comparison of all candidates, then final training of every candidate.
+
+    ``monitoring_holdout_hours``: the final models are trained without the latest N hours, so the
+    "latest 24h" monitoring prediction is a genuine out-of-sample check instead of scoring rows the
+    models were fitted on.
+    """
     if model_selection_metric != "mae":
         raise ValueError("Currently only model_selection_metric='mae' is supported.")
 
@@ -561,49 +625,24 @@ def train_and_compare_models(
         "beats_baseline": best_model_mae < baseline_mae,
     }
 
-    # Train final versions of all candidate models on all currently available data.
+    # Train final versions of all candidate models on all available data except the latest
+    # monitoring window (kept out-of-sample for the realized latest-24h check).
+    final_df = df.iloc[: len(df) - monitoring_holdout_hours] if monitoring_holdout_hours > 0 else df
     final_models = {}
 
     for model_name, model_config in active_models.items():
         for training_window_days in training_windows_days:
             candidate = _candidate_name(model_name, int(training_window_days))
-
-            final_train_df = _recent_training_subset(
-                train_df=df,
+            final_models[candidate] = _fit_candidate_model(
+                df=final_df,
+                model_name=model_name,
+                model_config=model_config,
+                feature_columns=feature_columns,
                 timestamp_column=timestamp_column,
+                target_column=target_column,
                 training_window_days=int(training_window_days),
+                recency_weighting_config=recency_weighting_config,
             )
-
-            final_model = make_model(model_name, model_config)
-
-            sample_weight = None
-            if recency_weighting_config and bool(recency_weighting_config.get("enabled", False)):
-                apply_to = set(recency_weighting_config.get("apply_to", []))
-
-                if model_name in apply_to or candidate in apply_to:
-                    sample_weight = _make_recency_weights(
-                        timestamps=final_train_df[timestamp_column],
-                        reference_time=final_train_df[timestamp_column].max(),
-                        half_life_days=float(recency_weighting_config["half_life_days"]),
-                        min_weight=float(recency_weighting_config.get("min_weight", 0.0)),
-                    )
-
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=ConvergenceWarning)
-
-                if sample_weight is not None:
-                    final_model.fit(
-                        final_train_df[feature_columns],
-                        final_train_df[target_column],
-                        sample_weight=sample_weight,
-                    )
-                else:
-                    final_model.fit(
-                        final_train_df[feature_columns],
-                        final_train_df[target_column],
-                    )
-
-            final_models[candidate] = final_model
 
 
     ensemble_coefficients = {}
@@ -612,22 +651,39 @@ def train_and_compare_models(
         ensemble_name = str(ensemble_config.get("name", "ensemble_linear"))
 
         if len(final_models) >= 2:
-            ensemble_model = LinearEnsembleRegressor(
-                base_models=dict(final_models),
+            ensemble_model = _fit_stacked_ensemble(
+                df=final_df,
+                active_models=active_models,
+                training_windows_days=[int(w) for w in training_windows_days],
                 feature_columns=feature_columns,
-                alpha=float(ensemble_config.get("alpha", 1.0)),
-                positive=bool(ensemble_config.get("positive", False)),
+                timestamp_column=timestamp_column,
+                target_column=target_column,
+                recency_weighting_config=recency_weighting_config,
+                ensemble_config=ensemble_config,
+                final_base_models=dict(final_models),
             )
-            ensemble_model.fit(df[feature_columns], df[target_column])
             final_models[ensemble_name] = ensemble_model
             ensemble_coefficients = ensemble_model.coefficients()
             
     selected_model = final_models[best_model_name]
 
+    # Split-conformal prediction intervals from the out-of-sample walk-forward residuals.
+    intervals_cfg = prediction_intervals_config or {"enabled": True}
+    prediction_intervals: dict[str, Any] = {}
+    for name, result in model_results.items():
+        residuals = result.pop("_residuals", None)
+        if residuals and bool(intervals_cfg.get("enabled", True)):
+            hours = np.asarray(residuals["hour"])
+            prediction_intervals[name] = interval_table(
+                residuals=np.asarray(residuals["residual"]),
+                hours=hours if bool(intervals_cfg.get("by_hour", True)) else None,
+                levels=[float(x) for x in intervals_cfg.get("levels", [0.8, 0.95])],
+            )
+
     model_path = Path(model_path)
     model_path.parent.mkdir(parents=True, exist_ok=True)
 
-    trained_at_utc = datetime.now(timezone.utc).isoformat()
+    trained_at_utc = datetime.now(UTC).isoformat()
 
     model_bundle = {
         # Backward-compatible best model access
@@ -645,6 +701,8 @@ def train_and_compare_models(
         "target_column": target_column,
         "timestamp_column": timestamp_column,
         "trained_at_utc": trained_at_utc,
+        "final_training_end": str(final_df[timestamp_column].max()),
+        "monitoring_holdout_hours": int(monitoring_holdout_hours),
         "forecast_safe_features": forecast_safe_features,
         "allowed_lag_hours": allowed_lag_hours or [24, 48, 168],
         "model_config": best_model_config,
@@ -656,6 +714,7 @@ def train_and_compare_models(
         
         "ensemble_config": ensemble_config or {"enabled": False},
         "ensemble_coefficients": ensemble_coefficients,
+        "prediction_intervals": prediction_intervals,
     }
     joblib.dump(model_bundle, model_path)
 
@@ -673,7 +732,7 @@ def train_and_compare_models(
     )
 
     report = {
-        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "created_at_utc": datetime.now(UTC).isoformat(),
         "features_path": str(features_path),
         "model_path": str(model_path),
         "feature_importance_path": str(feature_importance_path),
@@ -681,6 +740,8 @@ def train_and_compare_models(
         "timestamp_column": timestamp_column,
         "target_column": target_column,
         "n_rows": int(len(df)),
+        "final_training_end": str(final_df[timestamp_column].max()),
+        "monitoring_holdout_hours": int(monitoring_holdout_hours),
         "training_windows_days": training_windows_days,
         "n_features": int(len(feature_columns)),
         "feature_columns": feature_columns,
@@ -700,6 +761,10 @@ def train_and_compare_models(
         
         "ensemble_config": ensemble_config or {"enabled": False},
         "ensemble_coefficients": ensemble_coefficients,
+        "prediction_intervals": {
+            "method": "split-conformal on walk-forward validation residuals, by local hour",
+            "best_model": prediction_intervals.get(best_model_name, {}).get("overall"),
+        },
     }
 
     output_path = Path(output_path)

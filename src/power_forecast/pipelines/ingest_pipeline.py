@@ -4,8 +4,9 @@ from dotenv import load_dotenv
 from rich.console import Console
 
 from power_forecast.data.eia import fetch_eia_hourly_demand
+from power_forecast.data.locations import weather_locations
 from power_forecast.data.manifest import write_manifest
-from power_forecast.data.weather import fetch_open_meteo_weather
+from power_forecast.data.weather import fetch_open_meteo_weather_locations
 from power_forecast.utils.config import load_yaml
 
 console = Console()
@@ -32,16 +33,17 @@ def run_ingestion(config_path: str) -> None:
     )
     console.print(f"[green]Saved EIA demand rows:[/green] {len(eia_df):,}")
     console.print(
-    f"EIA time range: {eia_df['timestamp_utc'].min()} → {eia_df['timestamp_utc'].max()}"
-)
-
-    console.print(
-        f"Fetching weather: location={weather_cfg['location_name']} "
-        f"lookback_days={weather_cfg['lookback_days']}"
+        f"EIA time range: {eia_df['timestamp_utc'].min()} → {eia_df['timestamp_utc'].max()}"
     )
-    weather_df = fetch_open_meteo_weather(
-        latitude=float(weather_cfg["latitude"]),
-        longitude=float(weather_cfg["longitude"]),
+
+    locations = weather_locations(weather_cfg)
+    console.print(
+        "Fetching weather: locations="
+        + ", ".join(f"{loc['name']} ({loc['weight']:g})" for loc in locations)
+        + f" lookback_days={weather_cfg['lookback_days']}"
+    )
+    weather_df = fetch_open_meteo_weather_locations(
+        locations=locations,
         timezone_name=weather_cfg["timezone"],
         lookback_days=int(weather_cfg["lookback_days"]),
         output_path=weather_cfg["output_path"],

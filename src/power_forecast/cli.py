@@ -1,14 +1,14 @@
 import typer
 from rich.console import Console
 
-from power_forecast.pipelines.ingest_pipeline import run_ingestion
-from power_forecast.pipelines.validation_pipeline import run_validation
-from power_forecast.pipelines.feature_pipeline import run_feature_pipeline
 from power_forecast.pipelines.backtest_pipeline import run_backtest_pipeline
-from power_forecast.pipelines.train_pipeline import run_train_pipeline
-from power_forecast.pipelines.predict_pipeline import run_predict_pipeline
-from power_forecast.pipelines.monitor_pipeline import run_monitor_pipeline
+from power_forecast.pipelines.feature_pipeline import run_feature_pipeline
 from power_forecast.pipelines.forecast_pipeline import run_forecast_pipeline
+from power_forecast.pipelines.ingest_pipeline import run_ingestion
+from power_forecast.pipelines.monitor_pipeline import run_monitor_pipeline
+from power_forecast.pipelines.predict_pipeline import run_predict_pipeline
+from power_forecast.pipelines.train_pipeline import run_train_pipeline
+from power_forecast.pipelines.validation_pipeline import run_validation
 
 app = typer.Typer(help="PowerForecastMLOps CLI")
 console = Console()

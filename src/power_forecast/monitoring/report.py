@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import html
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -207,7 +207,7 @@ def build_monitoring_report(
         ratio_vs_baseline = None
 
     summary = {
-        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "created_at_utc": datetime.now(UTC).isoformat(),
         "health_status": health,
         "warnings": warnings,
         "latest_prediction_window": {
@@ -230,6 +230,10 @@ def build_monitoring_report(
             "bias": latest_bias,
         },
         "per_model_latest_metrics": per_model_latest_metrics,
+        # Share of latest actuals inside the selected model's prediction intervals.
+        "prediction_interval_coverage": {
+            key: value for key, value in latest_metrics.items() if key.startswith("coverage_")
+        },
         "walk_forward_training_metrics": {
             "mae": training_mae,
             "rmse": training_rmse,
@@ -657,6 +661,20 @@ def _render_html_dashboard(
 
     production_model = str(model.get("model_name", "unknown"))
     latest_winner = summary.get("latest_window_winner")
+
+    coverage = summary.get("prediction_interval_coverage") or {}
+    if coverage:
+        coverage_text = ", ".join(
+            f"{key.removeprefix('coverage_')}% interval: {100 * value:.0f}% of actuals inside"
+            for key, value in sorted(coverage.items(), key=lambda kv: int(kv[0].split("_")[1]))
+        )
+        coverage_html = (
+            '<p class="note">Shaded bands: split-conformal prediction intervals of the production '
+            "model, calibrated on walk-forward validation errors per hour of day. Latest 24h "
+            f"coverage — {html.escape(coverage_text)}.</p>"
+        )
+    else:
+        coverage_html = ""
 
     per_model_latest = summary.get("per_model_latest_metrics", {})
     per_model_training = summary.get("per_model_training_metrics", {})
@@ -1267,6 +1285,7 @@ def _render_html_dashboard(
       <h2>Latest 24h prediction</h2>
       <p class="note">The plot compares actual demand with each model candidate's prediction over the latest 24 known hours.</p>
       <div class="plot"><img src="figures/latest_predictions.png" alt="Latest predictions by model"></div>
+      {coverage_html}
     </section>
 
     <section>

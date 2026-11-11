@@ -1,7 +1,10 @@
 import pandas as pd
 
-from power_forecast.features.build_features import _add_lag_features, _add_rolling_features
-from power_forecast.features.build_features import _add_cyclic_calendar_features
+from power_forecast.features.build_features import (
+    _add_cyclic_calendar_features,
+    _add_lag_features,
+    _add_rolling_features,
+)
 
 
 def test_add_cyclic_calendar_features_creates_expected_columns():

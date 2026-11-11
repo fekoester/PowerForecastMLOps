@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+
 import numpy as np
-
 import pandas as pd
-
+from pandas.tseries.holiday import USFederalHolidayCalendar
 
 
 def _load_validation_status(path: str | Path) -> str:
@@ -35,6 +34,24 @@ def _prepare_eia(eia_path: str | Path) -> pd.DataFrame:
     df = df[["timestamp_utc", "demand_mwh"]].copy()
     df = df.sort_values("timestamp_utc").drop_duplicates("timestamp_utc")
     return df
+
+
+def _to_hourly_grid(df: pd.DataFrame, timestamp_column: str = "timestamp_utc") -> pd.DataFrame:
+    """Reindex to a complete hourly UTC grid.
+
+    Lag and rolling features are computed with row shifts. If an hour is missing from the
+    source data, ``shift(24)`` would silently become a 25-hour lag (and disagree with the
+    timestamp-based lookups used for the future forecast). On a complete grid, missing hours
+    become NaN rows that are dropped after feature construction instead.
+    """
+    if df.empty:
+        return df
+    full_index = pd.date_range(
+        df[timestamp_column].min(), df[timestamp_column].max(), freq="h", tz="UTC"
+    )
+    out = df.set_index(timestamp_column).reindex(full_index)
+    out.index.name = timestamp_column
+    return out.reset_index()
 
 
 def _prepare_weather(weather_path: str | Path, timezone_name: str) -> pd.DataFrame:
@@ -75,6 +92,8 @@ def _prepare_weather(weather_path: str | Path, timezone_name: str) -> pd.DataFra
         "wind_speed_10m",
         "shortwave_radiation",
     ]
+    # Per-location temperatures written by multi-location ingestion (temperature_2m__<slug>).
+    numeric_cols += [c for c in df.columns if c.startswith("temperature_2m__")]
 
     for col in numeric_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -84,7 +103,11 @@ def _prepare_weather(weather_path: str | Path, timezone_name: str) -> pd.DataFra
     return df
 
 
-def _add_calendar_features(df: pd.DataFrame, timezone_name: str) -> pd.DataFrame:
+def _add_calendar_features(
+    df: pd.DataFrame,
+    timezone_name: str,
+    use_holiday_features: bool = False,
+) -> pd.DataFrame:
     out = df.copy()
 
     local_ts = out["timestamp_utc"].dt.tz_convert(timezone_name)
@@ -95,6 +118,28 @@ def _add_calendar_features(df: pd.DataFrame, timezone_name: str) -> pd.DataFrame
     out["month"] = local_ts.dt.month
     out["is_weekend"] = (out["day_of_week"] >= 5).astype(int)
 
+    if use_holiday_features:
+        out = _add_holiday_features(out, local_ts)
+
+    return out
+
+
+def _add_holiday_features(df: pd.DataFrame, local_ts: pd.Series) -> pd.DataFrame:
+    """US federal holiday flags (local calendar date), plus the days around them.
+
+    Demand on holidays looks like a weekend; the days next to a holiday (e.g. the Friday after
+    Thanksgiving) are often reduced too. ``is_workday`` combines weekends and holidays.
+    """
+    out = df.copy()
+    local_dates = local_ts.dt.tz_localize(None).dt.normalize()
+    start = local_dates.min() - pd.Timedelta(days=7)
+    end = local_dates.max() + pd.Timedelta(days=7)
+    holidays = USFederalHolidayCalendar().holidays(start=start, end=end)
+
+    out["is_holiday"] = local_dates.isin(holidays).astype(int)
+    out["is_day_before_holiday"] = (local_dates + pd.Timedelta(days=1)).isin(holidays).astype(int)
+    out["is_day_after_holiday"] = (local_dates - pd.Timedelta(days=1)).isin(holidays).astype(int)
+    out["is_workday"] = ((out["is_weekend"] == 0) & (out["is_holiday"] == 0)).astype(int)
     return out
 
 
@@ -119,12 +164,33 @@ def _add_cyclic_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
 
     return out
 
-def _add_weather_features(df: pd.DataFrame, base_temperature_c: float) -> pd.DataFrame:
+def _add_weather_features(
+    df: pd.DataFrame,
+    base_temperature_c: float,
+    location_weights: dict[str, float] | None = None,
+) -> pd.DataFrame:
     out = df.copy()
 
     temp = out["temperature_2m"]
     out["cooling_degree"] = (temp - base_temperature_c).clip(lower=0)
     out["heating_degree"] = (base_temperature_c - temp).clip(lower=0)
+
+    # Multi-location weather: degree-hours are non-linear, so also compute them per location
+    # and average them with the location (population) weights.
+    location_temps = [c for c in out.columns if c.startswith("temperature_2m__")]
+    if location_temps:
+        location_weights = location_weights or {}
+        weights = {
+            c: float(location_weights.get(c.removeprefix("temperature_2m__"), 1.0))
+            for c in location_temps
+        }
+        total = sum(weights.values()) or 1.0
+        out["cooling_degree_weighted"] = sum(
+            weights[c] * (out[c] - base_temperature_c).clip(lower=0) for c in location_temps
+        ) / total
+        out["heating_degree_weighted"] = sum(
+            weights[c] * (base_temperature_c - out[c]).clip(lower=0) for c in location_temps
+        ) / total
 
     return out
 
@@ -209,6 +275,8 @@ def build_features(
     origin_rolling_windows_hours: list[int],
     base_temperature_c: float,
     use_cyclic_calendar_features: bool,
+    use_holiday_features: bool = False,
+    location_weights: dict[str, float] | None = None,
 ) -> pd.DataFrame:
     validation_status = _load_validation_status(validation_report_path)
     if validation_status == "fail":
@@ -218,17 +286,24 @@ def build_features(
         )
 
     eia = _prepare_eia(eia_path)
+    n_source_rows = len(eia)
+    eia = _to_hourly_grid(eia)
+    n_missing_hours = int(eia["demand_mwh"].isna().sum())
     weather = _prepare_weather(weather_path, timezone_name=timezone_name)
 
     df = pd.merge(eia, weather, on="timestamp_utc", how="left")
     df = df.sort_values("timestamp_utc").reset_index(drop=True)
 
-    df = _add_calendar_features(df, timezone_name=timezone_name)
+    df = _add_calendar_features(
+        df, timezone_name=timezone_name, use_holiday_features=use_holiday_features
+    )
 
     if use_cyclic_calendar_features:
         df = _add_cyclic_calendar_features(df)
 
-    df = _add_weather_features(df, base_temperature_c=base_temperature_c)
+    df = _add_weather_features(
+        df, base_temperature_c=base_temperature_c, location_weights=location_weights
+    )
     df = _add_lag_features(df, lags_hours=lags_hours)
     df = _add_rolling_features(df, windows_hours=rolling_windows_hours)
     df = _add_origin_rolling_features(df, windows_hours=origin_rolling_windows_hours)
@@ -247,8 +322,10 @@ def build_features(
     feature_columns = [c for c in df.columns if c not in ["timestamp_utc", "demand_mwh"]]
 
     summary = {
-        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "created_at_utc": datetime.now(UTC).isoformat(),
         "output_path": str(output_path),
+        "n_source_rows": int(n_source_rows),
+        "n_missing_hours_in_source": n_missing_hours,
         "n_rows_before_dropna": int(before_drop),
         "n_rows_after_dropna": int(after_drop),
         "n_dropped_rows": int(before_drop - after_drop),
@@ -264,7 +341,9 @@ def build_features(
         "origin_rolling_windows_hours": origin_rolling_windows_hours,
         "base_temperature_c": base_temperature_c,
         "use_cyclic_calendar_features": use_cyclic_calendar_features,
+        "use_holiday_features": use_holiday_features,
         "leakage_note": (
+            "Data is reindexed to a complete hourly grid, so row shifts are exact hour lags. "
             "Lag features use shifted demand. Rolling features are computed from "
             "demand_mwh.shift(1), so current target is not used as an input."
         ),
