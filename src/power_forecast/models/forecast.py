@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -10,8 +10,10 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from power_forecast.features.future_features import build_future_24h_features
+from power_forecast.models.inference import apply_intervals, predict_with_history
 from power_forecast.models.predict import (
     _get_models_from_bundle,
+    _shade_intervals,
     _validate_feature_schema,
 )
 
@@ -19,8 +21,7 @@ from power_forecast.models.predict import (
 def run_future_24h_forecast(
     model_path: str | Path,
     eia_path: str | Path,
-    latitude: float,
-    longitude: float,
+    locations: list[dict],
     timezone_name: str,
     base_temperature_c: float,
     allowed_lag_hours: list[int],
@@ -34,6 +35,9 @@ def run_future_24h_forecast(
     timestamp_column: str,
     prediction_prefix: str,
     use_cyclic_calendar_features: bool,
+    use_holiday_features: bool = False,
+    location_weights: dict[str, float] | None = None,
+    history_features_path: str | Path | None = None,
 ) -> dict[str, Any]:
     bundle = joblib.load(model_path)
     models = _get_models_from_bundle(bundle)
@@ -43,8 +47,7 @@ def run_future_24h_forecast(
     future_features = build_future_24h_features(
         eia_path=eia_path,
         weather_forecast_output_path=weather_forecast_output_path,
-        latitude=latitude,
-        longitude=longitude,
+        locations=locations,
         timezone_name=timezone_name,
         base_temperature_c=base_temperature_c,
         allowed_lag_hours=allowed_lag_hours,
@@ -52,9 +55,20 @@ def run_future_24h_forecast(
         origin_rolling_windows_hours=origin_rolling_windows_hours,
         output_path=features_output_path,
         use_cyclic_calendar_features=use_cyclic_calendar_features,
+        use_holiday_features=use_holiday_features,
+        location_weights=location_weights,
     )
 
     _validate_feature_schema(future_features, feature_columns)
+
+    # Recent feature rows warm up stateful models (ESN) before the forecast horizon.
+    history = None
+    if history_features_path is not None and Path(history_features_path).exists():
+        history = pd.read_csv(history_features_path)
+        if all(c in history.columns for c in feature_columns):
+            history = history[feature_columns]
+        else:
+            history = None
 
     forecast_df = future_features[[timestamp_column]].copy()
     prediction_columns_by_model = {}
@@ -62,7 +76,9 @@ def run_future_24h_forecast(
     for model_name, model in models.items():
         col = f"{prediction_prefix}_{model_name}"
         prediction_columns_by_model[model_name] = col
-        forecast_df[col] = model.predict(future_features[feature_columns])
+        forecast_df[col] = predict_with_history(
+            model, future_features[feature_columns], X_history=history
+        )
 
     if best_model_name not in prediction_columns_by_model:
         raise RuntimeError(f"Best model {best_model_name} not available in model bundle.")
@@ -70,6 +86,13 @@ def run_future_24h_forecast(
     forecast_df[f"{prediction_prefix}_best"] = forecast_df[
         prediction_columns_by_model[best_model_name]
     ]
+    interval_bounds = apply_intervals(
+        forecast_df[f"{prediction_prefix}_best"].to_numpy(),
+        future_features["hour"].to_numpy() if "hour" in future_features.columns else None,
+        bundle.get("prediction_intervals", {}).get(best_model_name),
+    )
+    for key, values in interval_bounds.items():
+        forecast_df[f"{prediction_prefix}_best_{key}"] = values
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -81,15 +104,17 @@ def run_future_24h_forecast(
         prediction_columns_by_model=prediction_columns_by_model,
         best_model_name=best_model_name,
         figure_path=figure_path,
+        interval_bounds=interval_bounds,
     )
 
     summary = {
-        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "created_at_utc": datetime.now(UTC).isoformat(),
         "model_path": str(model_path),
         "model_trained_at_utc": bundle.get("trained_at_utc"),
         "best_model_name": best_model_name,
         "available_models": list(models.keys()),
         "prediction_columns_by_model": prediction_columns_by_model,
+        "interval_columns": [f"{prediction_prefix}_best_{k}" for k in interval_bounds],
         "features_output_path": str(features_output_path),
         "weather_forecast_output_path": str(weather_forecast_output_path),
         "output_path": str(output_path),
@@ -116,11 +141,13 @@ def _plot_future_forecast(
     prediction_columns_by_model: dict[str, str],
     best_model_name: str,
     figure_path: str | Path,
+    interval_bounds: dict | None = None,
 ) -> None:
     figure_path = Path(figure_path)
     figure_path.parent.mkdir(parents=True, exist_ok=True)
 
     plt.figure(figsize=(12, 6))
+    _shade_intervals(forecast_df[timestamp_column], interval_bounds)
 
     for model_name, col in prediction_columns_by_model.items():
         linewidth = 2.8 if model_name == best_model_name else 1.7

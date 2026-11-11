@@ -1,7 +1,7 @@
+import lightgbm as lgb
 from sklearn.compose import TransformedTargetRegressor
 
 from power_forecast.models.model_zoo import enabled_models, make_model
-import lightgbm as lgb
 
 
 def test_enabled_models_filters_disabled_models():

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -145,7 +145,7 @@ def run_baseline_backtest(
     aggregate = _aggregate_fold_results(fold_results=fold_results, baselines=baselines)
 
     report = {
-        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "created_at_utc": datetime.now(UTC).isoformat(),
         "features_path": str(features_path),
         "timestamp_column": timestamp_column,
         "target_column": target_column,

@@ -1,4 +1,4 @@
-\project:
+project:
   name: PowerForecastMLOps
 
 eia:
@@ -13,6 +13,16 @@ weather:
   latitude: 34.0522
   longitude: -118.2437
   timezone: America/Los_Angeles
+  # CAISO serves most of California, so demand follows a population-weighted temperature, not
+  # Los Angeles alone. Weights are approximate metro populations in millions (relative weights).
+  # Remove `locations` to fall back to the single latitude/longitude above.
+  locations:
+    - {name: Los Angeles, latitude: 34.0522, longitude: -118.2437, weight: 12.9}
+    - {name: Inland Empire, latitude: 33.9806, longitude: -117.3755, weight: 4.6}
+    - {name: San Jose, latitude: 37.3382, longitude: -121.8863, weight: 7.7}
+    - {name: San Diego, latitude: 32.7157, longitude: -117.1611, weight: 3.3}
+    - {name: Sacramento, latitude: 38.5816, longitude: -121.4944, weight: 2.4}
+    - {name: Fresno, latitude: 36.7378, longitude: -119.7871, weight: 3.0}
   lookback_days: 180
   output_path: data/raw/weather.csv
 
@@ -98,6 +108,9 @@ features:
     - 24
 
   base_temperature_c: 18.0
+
+  # US federal holidays plus the days before/after them (no extra dependency).
+  use_holiday_features: true
   
   use_cyclic_calendar_features: true
 
@@ -186,7 +199,16 @@ train:
       ridge_alpha: 1.0
       random_state: 42
       
+  # Split-conformal intervals from walk-forward residuals, per local hour of day.
+  prediction_intervals:
+    enabled: true
+    levels: [0.8, 0.95]
+    by_hour: true
+
   ensemble:
+    # The meta-model is fit on the last `holdout_days` of each training set, using base models
+    # trained without those days (out-of-sample), so it does not reward overfitting.
+    holdout_days: 30
     enabled: false
     name: ensemble_linear
     alpha: 1.0

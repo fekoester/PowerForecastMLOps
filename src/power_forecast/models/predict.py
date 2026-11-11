@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +9,11 @@ import joblib
 import matplotlib.pyplot as plt
 import pandas as pd
 
+from power_forecast.models.inference import (
+    apply_intervals,
+    interval_coverage,
+    predict_with_history,
+)
 from power_forecast.models.metrics import bias, mae, mape, rmse
 
 
@@ -85,6 +90,7 @@ def run_batch_prediction(
         )
 
     pred_df = df.tail(n_latest_rows).copy()
+    history_df = df.iloc[: len(df) - n_latest_rows]
 
     per_model_metrics: dict[str, dict[str, float]] = {}
     prediction_columns_by_model: dict[str, str] = {}
@@ -92,7 +98,9 @@ def run_batch_prediction(
     for model_name, model in models.items():
         col = _safe_prediction_column(model_name)
         prediction_columns_by_model[model_name] = col
-        pred_df[col] = model.predict(pred_df[feature_columns])
+        pred_df[col] = predict_with_history(
+            model, pred_df[feature_columns], X_history=history_df[feature_columns]
+        )
 
     if best_model_name not in prediction_columns_by_model:
         raise RuntimeError(
@@ -102,6 +110,17 @@ def run_batch_prediction(
 
     best_prediction_col = prediction_columns_by_model[best_model_name]
     pred_df[prediction_column] = pred_df[best_prediction_col]
+
+    interval_bounds = apply_intervals(
+        pred_df[prediction_column].to_numpy(),
+        pred_df["hour"].to_numpy() if "hour" in pred_df.columns else None,
+        bundle.get("prediction_intervals", {}).get(best_model_name),
+    )
+    interval_columns = []
+    for key, values in interval_bounds.items():
+        column = f"{prediction_column}_{key}"
+        pred_df[column] = values
+        interval_columns.append(column)
 
     has_actuals = target_column in pred_df.columns and pred_df[target_column].notna().all()
 
@@ -115,7 +134,8 @@ def run_batch_prediction(
                 "bias": bias(pred_df[target_column], pred_df[col]),
             }
 
-        best_metrics = per_model_metrics[best_model_name]
+        best_metrics = dict(per_model_metrics[best_model_name])
+        best_metrics.update(interval_coverage(pred_df[target_column].to_numpy(), interval_bounds))
 
         pred_df["error"] = pred_df[prediction_column] - pred_df[target_column]
         pred_df["absolute_error"] = pred_df["error"].abs()
@@ -126,6 +146,7 @@ def run_batch_prediction(
     output_columns = [
         timestamp_column,
         prediction_column,
+        *interval_columns,
         *prediction_columns_by_model.values(),
     ]
 
@@ -153,10 +174,11 @@ def run_batch_prediction(
         prediction_columns_by_model=prediction_columns_by_model,
         figure_path=figure_path,
         has_actuals=has_actuals,
+        interval_bounds=interval_bounds,
     )
 
     summary = {
-        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "created_at_utc": datetime.now(UTC).isoformat(),
         "model_path": str(model_path),
         "input_path": str(input_path),
         "output_path": str(output_path),
@@ -171,6 +193,7 @@ def run_batch_prediction(
         "max_timestamp": str(pred_df[timestamp_column].max()),
         "feature_count": int(len(feature_columns)),
         "prediction_column": prediction_column,
+        "interval_columns": interval_columns,
         "has_actuals": bool(has_actuals),
         "metrics": best_metrics,
         "per_model_metrics": per_model_metrics,
@@ -194,11 +217,13 @@ def _plot_latest_predictions(
     prediction_columns_by_model: dict[str, str],
     figure_path: str | Path,
     has_actuals: bool,
+    interval_bounds: dict | None = None,
 ) -> None:
     figure_path = Path(figure_path)
     figure_path.parent.mkdir(parents=True, exist_ok=True)
 
     plt.figure(figsize=(12, 6))
+    _shade_intervals(pred_df[timestamp_column], interval_bounds)
 
     if has_actuals:
         plt.plot(
@@ -226,3 +251,23 @@ def _plot_latest_predictions(
     plt.tight_layout()
     plt.savefig(figure_path, dpi=160)
     plt.close()
+
+
+def _shade_intervals(x, interval_bounds: dict | None) -> None:
+    """Shades the selected model's prediction intervals (widest first)."""
+    if not interval_bounds:
+        return
+    levels = sorted(
+        (int(k.removeprefix("lower_")) for k in interval_bounds if k.startswith("lower_")),
+        reverse=True,
+    )
+    for i, pct in enumerate(levels):
+        plt.fill_between(
+            x,
+            interval_bounds[f"lower_{pct}"],
+            interval_bounds[f"upper_{pct}"],
+            color="tab:blue",
+            alpha=0.12 + 0.1 * i,
+            linewidth=0,
+            label=f"{pct}% interval (selected model)",
+        )

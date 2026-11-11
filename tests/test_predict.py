@@ -1,5 +1,5 @@
-import pytest
 import pandas as pd
+import pytest
 
 from power_forecast.models.predict import _validate_feature_schema
 

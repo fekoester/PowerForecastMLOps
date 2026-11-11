@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from rich.console import Console
 from rich.table import Table
@@ -37,7 +37,7 @@ def run_validation(config_path: str) -> None:
         overall_status = "warn"
 
     report = {
-        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "created_at_utc": datetime.now(UTC).isoformat(),
         "status": overall_status,
         "datasets": {
             "eia": eia_report,

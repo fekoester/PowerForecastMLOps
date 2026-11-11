@@ -4,8 +4,9 @@ from pathlib import Path
 
 import pandas as pd
 
+from power_forecast.data.locations import WEATHER_VARIABLES
 from power_forecast.data.weather_forecast import (
-    fetch_open_meteo_forecast,
+    fetch_open_meteo_forecast_locations,
     save_weather_forecast,
 )
 from power_forecast.features.build_features import (
@@ -94,8 +95,7 @@ def _add_future_same_hour_features(
 def build_future_24h_features(
     eia_path: str | Path,
     weather_forecast_output_path: str | Path,
-    latitude: float,
-    longitude: float,
+    locations: list[dict],
     timezone_name: str,
     base_temperature_c: float,
     allowed_lag_hours: list[int],
@@ -103,6 +103,8 @@ def build_future_24h_features(
     origin_rolling_windows_hours: list[int],
     output_path: str | Path,
     use_cyclic_calendar_features: bool,
+    use_holiday_features: bool = False,
+    location_weights: dict[str, float] | None = None,
 ) -> pd.DataFrame:
     eia = pd.read_csv(eia_path)
     eia["timestamp_utc"] = pd.to_datetime(eia["timestamp_utc"], utc=True)
@@ -118,9 +120,8 @@ def build_future_24h_features(
         tz="UTC",
     )
 
-    weather_forecast = fetch_open_meteo_forecast(
-        latitude=latitude,
-        longitude=longitude,
+    weather_forecast = fetch_open_meteo_forecast_locations(
+        locations=locations,
         timezone_name=timezone_name,
         forecast_days=3,
     )
@@ -134,10 +135,8 @@ def build_future_24h_features(
     )
 
     weather_cols = [
-        "temperature_2m",
-        "relative_humidity_2m",
-        "wind_speed_10m",
-        "shortwave_radiation",
+        *WEATHER_VARIABLES,
+        *[c for c in future.columns if c.startswith("temperature_2m__")],
     ]
 
     future[weather_cols] = future[weather_cols].interpolate(limit_direction="both")
@@ -146,12 +145,16 @@ def build_future_24h_features(
         missing = future[weather_cols].isna().sum().to_dict()
         raise RuntimeError(f"Future weather forecast has missing values: {missing}")
 
-    future = _add_calendar_features(future, timezone_name=timezone_name)
+    future = _add_calendar_features(
+        future, timezone_name=timezone_name, use_holiday_features=use_holiday_features
+    )
 
     if use_cyclic_calendar_features:
         future = _add_cyclic_calendar_features(future)
 
-    future = _add_weather_features(future, base_temperature_c=base_temperature_c)
+    future = _add_weather_features(
+        future, base_temperature_c=base_temperature_c, location_weights=location_weights
+    )
 
     history = eia.set_index("timestamp_utc")["demand_mwh"]
 

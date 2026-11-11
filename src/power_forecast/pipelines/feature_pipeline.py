@@ -3,6 +3,7 @@ from __future__ import annotations
 from rich.console import Console
 from rich.table import Table
 
+from power_forecast.data.locations import location_weights
 from power_forecast.features.build_features import build_features
 from power_forecast.utils.config import load_yaml
 
@@ -32,6 +33,8 @@ def run_feature_pipeline(config_path: str) -> None:
         use_cyclic_calendar_features=bool(
             feature_cfg.get("use_cyclic_calendar_features", False)
         ),
+        use_holiday_features=bool(feature_cfg.get("use_holiday_features", False)),
+        location_weights=location_weights(config["weather"]),
     )
 
     feature_columns = [c for c in df.columns if c not in ["timestamp_utc", "demand_mwh"]]

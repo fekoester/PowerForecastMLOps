@@ -48,6 +48,15 @@ def run_train_pipeline(
         selected_models=selected_models,
         selected_windows=selected_windows,
         ensemble_config=dict(train_cfg.get("ensemble", {"enabled": False})),
+        prediction_intervals_config=dict(
+            train_cfg.get("prediction_intervals", {"enabled": True})
+        ),
+        # Keep the latest monitoring window out of the final fit (default: predict.n_latest_rows).
+        monitoring_holdout_hours=int(
+            train_cfg.get(
+                "monitoring_holdout_hours", config.get("predict", {}).get("n_latest_rows", 24)
+            )
+        ),
     )
     
     table = Table(title="Model Comparison Summary")

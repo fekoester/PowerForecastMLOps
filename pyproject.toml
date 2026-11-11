@@ -1,6 +1,6 @@
 [project]
 name = "power-forecast-mlops"
-version = "0.1.0"
+version = "0.2.0"
 description = "Live ML forecasting platform for electricity demand using EIA and Open-Meteo data."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -18,19 +18,27 @@ dependencies = [
     "typer>=0.12",
     "rich>=13.7",
     "matplotlib>=3.9",
-    "pytest>=8.3",
-    "ruff>=0.6",
     "scikit-learn>=1.5",
     "lightgbm>=4.5",
     "joblib>=1.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.6",
 ]
 
 [project.scripts]
 power-forecast = "power_forecast.cli:app"
 
 [tool.ruff]
-line-length = 100
+line-length = 110
 target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP"]
+ignore = ["B905"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

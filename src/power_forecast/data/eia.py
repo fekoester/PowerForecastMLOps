@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from power_forecast.utils.env import require_env_var
 
 import pandas as pd
 import requests
 
+from power_forecast.utils.env import require_env_var
 
 EIA_REGION_DATA_URL = "https://api.eia.gov/v2/electricity/rto/region-data/data/"
 
@@ -24,7 +24,7 @@ def fetch_eia_hourly_demand(
     """
     api_key = require_env_var("EIA_API_KEY")
 
-    end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    end = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     start = end - timedelta(days=lookback_days)
 
     page_size = 5000
