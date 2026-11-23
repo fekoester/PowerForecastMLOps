@@ -4,8 +4,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
-import requests
 
+from power_forecast.data.locations import get_with_retry
 from power_forecast.utils.env import require_env_var
 
 EIA_REGION_DATA_URL = "https://api.eia.gov/v2/electricity/rto/region-data/data/"
@@ -46,9 +46,7 @@ def fetch_eia_hourly_demand(
             "length": page_size,
         }
 
-        response = requests.get(EIA_REGION_DATA_URL, params=params, timeout=60)
-        response.raise_for_status()
-        payload = response.json()
+        payload = get_with_retry(EIA_REGION_DATA_URL, params=params, timeout=60)
 
         rows = payload.get("response", {}).get("data", [])
         if not rows and offset == 0:

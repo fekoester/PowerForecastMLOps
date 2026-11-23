@@ -59,12 +59,27 @@ def location_weights(weather_cfg: dict[str, Any]) -> dict[str, float]:
     return {loc["slug"]: loc["weight"] for loc in locs} if len(locs) > 1 else {}
 
 
+RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
+
+
 def get_with_retry(url: str, params: dict[str, Any], timeout: int, attempts: int = 5) -> dict:
-    """GET with exponential backoff on rate limits (429) and transient server errors."""
+    """GET with exponential backoff (5, 10, 20, 40 s) on transient failures.
+
+    Retried: rate limits (429), server errors (5xx), timeouts and dropped connections. Open-Meteo
+    occasionally stalls in the TLS handshake on CI runners; without retrying timeouts a single slow
+    handshake failed the whole scheduled pipeline. Other HTTP errors (400, 401, 404, ...) raise at once.
+    """
     delay = 5.0
     for attempt in range(1, attempts + 1):
-        response = requests.get(url, params=params, timeout=timeout)
-        if response.status_code in {429, 500, 502, 503, 504} and attempt < attempts:
+        try:
+            response = requests.get(url, params=params, timeout=timeout)
+        except (requests.Timeout, requests.ConnectionError):
+            if attempt == attempts:
+                raise
+            time.sleep(delay)
+            delay *= 2
+            continue
+        if response.status_code in RETRY_STATUS_CODES and attempt < attempts:
             time.sleep(delay)
             delay *= 2
             continue
